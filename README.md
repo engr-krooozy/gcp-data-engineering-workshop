@@ -241,10 +241,7 @@ def move_to_failed_bucket(storage_client, bucket_name, file_name):
 
 @functions_framework.cloud_event
 def process_csv_and_generate_content(cloud_event):
-    # --- FIX: Initialize Clients within the function handler ---
-    # This is the core of the fix. It ensures that for every invocation,
-    # we get a new, valid client connection, preventing issues with
-    # stale or broken connections on "warm starts".
+    # : Initialize Clients within the function handler ---
     try:
         storage_client = storage.Client()
         bq_client = bigquery.Client()
