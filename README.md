@@ -39,7 +39,7 @@ If any file fails during processing, it is automatically moved to a **Cloud Stor
 
 First, let's get your Google Cloud project and Cloud Shell ready.
 
-> **Prerequisite:** You need a Google Cloud account with billing enabled. If you're new, you can sign up for the [Google Cloud Free Tier](https://cloud.google.com/free), which includes a 90-day, $300 free trial.
+> **Prerequisite:** You need a Google Cloud account with billing enabled. You can also access the instrumentless credit [here](https://trygcp.dev/claim/accra-roadshow2)
 
 ### 1.1. Activate Cloud Shell
 
