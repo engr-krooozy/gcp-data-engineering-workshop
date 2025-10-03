@@ -2,7 +2,7 @@
 
 ## Welcome to the Workshop!
 
-Welcome! In this hands-on workshop, you'll build a powerful, resilient, multi-modal, serverless AI application on Google Cloud. Forget complex pipelines and long deployments. Today, we focus on speed, simplicity, and the magic of chaining generative AI models.
+Welcome! In this hands-on workshop, you'll build a powerful, resilient, multi-modal, serverless AI application on Google Cloud. Forget complex pipelines and long deployments. 
 
 You will build an automated content factory that reads product information from a CSV file, uses Google's **Gemini 2.5 Pro** model to write compelling marketing descriptions, and then calls the **Imagen** model to generate a unique product image to match. The entire process is protected by content moderation filters and includes robust error handling, with all results stored in **BigQuery**, Google's serverless data warehouse.
 
