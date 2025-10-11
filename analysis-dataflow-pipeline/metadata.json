@@ -1,6 +1,6 @@
 {
-    "name": "CSV to AI Content",
-    "description": "A Dataflow pipeline that reads from Pub/Sub, generates content with Vertex AI, and writes to BigQuery.",
+    "name": "Market News Analysis",
+    "description": "A Dataflow pipeline that analyzes financial news with Vertex AI.",
     "parameters": [
         {
             "name": "input_subscription",
@@ -15,9 +15,9 @@
             "param_type": "TEXT"
         },
         {
-            "name": "product_images_bucket_name",
-            "label": "Product images bucket name",
-            "help_text": "The GCS bucket to store generated images in.",
+            "name": "sentiment_images_bucket_name",
+            "label": "Sentiment images bucket name",
+            "help_text": "The GCS bucket to store generated sentiment chart icons in.",
             "param_type": "TEXT"
         },
         {
