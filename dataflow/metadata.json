@@ -1,0 +1,36 @@
+{
+    "name": "CSV to AI Content",
+    "description": "A Dataflow pipeline that reads from Pub/Sub, generates content with Vertex AI, and writes to BigQuery.",
+    "parameters": [
+        {
+            "name": "input_subscription",
+            "label": "Input Pub/Sub subscription",
+            "help_text": "The Pub/Sub subscription to read messages from.",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "output_table",
+            "label": "Output BigQuery table",
+            "help_text": "The BigQuery table to write results to.",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "product_images_bucket_name",
+            "label": "Product images bucket name",
+            "help_text": "The GCS bucket to store generated images in.",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "project_id",
+            "label": "Project ID",
+            "help_text": "The GCP project ID.",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "region",
+            "label": "Region",
+            "help_text": "The GCP region to run the Dataflow job in.",
+            "param_type": "TEXT"
+        }
+    ]
+}
