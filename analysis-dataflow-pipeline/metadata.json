@@ -19,18 +19,6 @@
             "label": "Sentiment images bucket name",
             "helpText": "The GCS bucket to store generated sentiment chart icons in.",
             "param_type": "TEXT"
-        },
-        {
-            "name": "project_id",
-            "label": "Project ID",
-            "helpText": "The GCP project ID.",
-            "param_type": "TEXT"
-        },
-        {
-            "name": "region",
-            "label": "Region",
-            "helpText": "The GCP region to run the Dataflow job in.",
-            "param_type": "TEXT"
         }
     ]
 }
