@@ -317,11 +317,36 @@ cat > analysis-dataflow-pipeline/metadata.json << EOF
     "name": "Market News Analysis",
     "description": "A Dataflow pipeline that analyzes financial news with Vertex AI.",
     "parameters": [
-        { "name": "input_subscription", "label": "Input Pub/Sub subscription", "param_type": "TEXT" },
-        { "name": "output_table", "label": "Output BigQuery table", "param_type": "TEXT" },
-        { "name": "sentiment_images_bucket_name", "label": "Sentiment images bucket", "param_type": "TEXT" },
-        { "name": "project_id", "label": "Project ID", "param_type": "TEXT" },
-        { "name": "region", "label": "Region", "param_type": "TEXT" }
+        {
+            "name": "input_subscription",
+            "label": "Input Pub/Sub subscription",
+            "helpText": "The Pub/Sub subscription to read messages from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "output_table",
+            "label": "Output BigQuery table",
+            "helpText": "The BigQuery table to write results to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "sentiment_images_bucket_name",
+            "label": "Sentiment images bucket name",
+            "helpText": "The GCS bucket to store generated sentiment chart icons in.",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "project_id",
+            "label": "Project ID",
+            "helpText": "The GCP project ID.",
+            "param_type": "TEXT"
+        },
+        {
+            "name": "region",
+            "label": "Region",
+            "helpText": "The GCP region to run the Dataflow job in.",
+            "param_type": "TEXT"
+        }
     ]
 }
 EOF
