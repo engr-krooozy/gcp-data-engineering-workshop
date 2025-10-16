@@ -1,5 +1,5 @@
 import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
 import argparse
 import logging
 import json
@@ -69,26 +69,24 @@ class AnalyzeArticle(beam.DoFn):
             # Optionally, you could output to a dead-letter queue here
             pass
 
-
 def run():
     # Set up command-line argument parsing
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_subscription', required=True, help='Pub/Sub subscription to read from.')
     parser.add_argument('--output_table', required=True, help='BigQuery table to write to.')
     parser.add_argument('--sentiment_images_bucket_name', required=True, help='GCS bucket for sentiment images.')
-    parser.add_argument('--project_id', required=True)
-    parser.add_argument('--region', required=True)
 
     known_args, pipeline_args = parser.parse_known_args()
     pipeline_options = PipelineOptions(pipeline_args, streaming=True)
+    gcp_options = pipeline_options.view_as(GoogleCloudOptions)
 
     # Define and run the pipeline
     with beam.Pipeline(options=pipeline_options) as p:
-        (p | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=f"projects/{known_args.project_id}/subscriptions/{known_args.input_subscription.split('/')[-1]}")
+        (p | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription)
            | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
            | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
-               project_id=known_args.project_id,
-               region=known_args.region,
+               project_id=gcp_options.project,
+               region=gcp_options.region,
                sentiment_images_bucket_name=known_args.sentiment_images_bucket_name
             ))
            | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
