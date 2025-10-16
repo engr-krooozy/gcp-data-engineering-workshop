@@ -214,7 +214,7 @@ mkdir -p analysis-dataflow-pipeline
 # Create pipeline.py
 cat > analysis-dataflow-pipeline/pipeline.py << EOF
 import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
 import argparse
 import logging
 import json
@@ -278,18 +278,17 @@ def run():
     parser.add_argument('--input_subscription', required=True)
     parser.add_argument('--output_table', required=True)
     parser.add_argument('--sentiment_images_bucket_name', required=True)
-    parser.add_argument('--project_id', required=True)
-    parser.add_argument('--region', required=True)
 
     known_args, pipeline_args = parser.parse_known_args()
     pipeline_options = PipelineOptions(pipeline_args, streaming=True)
+    gcp_options = pipeline_options.view_as(GoogleCloudOptions)
 
     with beam.Pipeline(options=pipeline_options) as p:
         (p | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription)
            | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
            | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
-               project_id=known_args.project_id,
-               region=known_args.region,
+               project_id=gcp_options.project,
+               region=gcp_options.region,
                sentiment_images_bucket_name=known_args.sentiment_images_bucket_name
             ))
            | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
@@ -393,9 +392,7 @@ gcloud dataflow flex-template run "fintech-news-analysis-`date +%Y%m%d-%H%M%S`" 
     --region $REGION \
     --parameters input_subscription=projects/$PROJECT_ID/subscriptions/$ARTICLES_SUB \
     --parameters output_table=$PROJECT_ID:$BQ_DATASET.$BQ_TABLE \
-    --parameters sentiment_images_bucket_name=$SENTIMENT_IMAGES_BUCKET_NAME \
-    --parameters project_id=$PROJECT_ID \
-    --parameters region=$REGION
+    --parameters sentiment_images_bucket_name=$SENTIMENT_IMAGES_BUCKET_NAME
 ```
 
 ---
