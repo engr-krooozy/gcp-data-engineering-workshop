@@ -1,37 +1,41 @@
-# The Serverless AI Factory: From CSV to Content with Google Cloud
+# The Fintech News Analysis Pipeline: From Live RSS to AI-Powered Insights
 
 ## Welcome to the Workshop!
 
-Welcome! In this hands-on workshop, you'll build a powerful, resilient, multi-modal, serverless AI application on Google Cloud. Forget complex pipelines and long deployments. 
+Welcome! In this hands-on workshop, you'll build a sophisticated, real-time data engineering pipeline on Google Cloud. This project is designed for a **fintech** use case, where raw financial news is automatically ingested, analyzed by AI, and transformed into structured, actionable intelligence.
 
-You will build an automated content factory that reads product information from a CSV file, uses Google's **Gemini 2.5 Pro** model to write compelling marketing descriptions, and then calls the **Imagen** model to generate a unique product image to match. The entire process is protected by content moderation filters and includes robust error handling, with all results stored in **BigQuery**, Google's serverless data warehouse.
+This workshop is designed to be completed in approximately **1 hour**.
 
 ---
 
 ### What You'll Learn
 
 *   How to set up a Google Cloud environment using Cloud Shell.
-*   The fundamentals of a serverless, event-driven architecture.
-*   How to write, configure, and deploy a production-ready Python **Cloud Function**.
-*   How to call and chain multiple **Vertex AI** models (**Gemini** for text and **Imagen** for images).
-*   How to implement content moderation using built-in safety filters.
-*   How to build a resilient pipeline with robust error handling.
-*   How to use **Cloud Storage** to trigger events and store multiple types of artifacts.
-*   How to store and query structured results in **BigQuery**.
+*   How to build a modern, event-driven data pipeline from scratch.
+*   How to use **Cloud Scheduler** to trigger a pipeline on a recurring schedule.
+*   How to write a Python **Cloud Function** to ingest and parse a live, public **RSS feed**.
+*   How to use **Pub/Sub** to decouple ingestion from processing.
+*   How to build and deploy a streaming **Dataflow** pipeline for scalable data transformation.
+*   How to use **Vertex AI (Gemini)** for advanced NLP tasks like summarization and sentiment analysis.
+*   How to use **Vertex AI (Imagen)** to generate visual representations of data.
+*   How to store and query the final structured results in **BigQuery**.
 
-### Our Architecture
+### Our Fintech Architecture
 
-We will build a resilient, multi-modal system with several Google Cloud services. The primary workflow is:
+We will build a real-time news analysis pipeline using a scheduled, event-driven architecture.
 
-`[User uploads CSV]` -> `Cloud Storage (Input)` -> `(triggers)` -> `Cloud Function`
+![Architecture Diagram](https://storage.googleapis.com/gweb-cloudblog-publish/images/Event-driven_data_processing_rev2.max-2600x2600.png)
 
-The Cloud Function then performs several actions:
-1.  Calls **Vertex AI (Gemini)** to generate text.
-2.  Calls **Vertex AI (Imagen)** to generate an image from the text.
-3.  Stores the generated text and image URL in **BigQuery**.
-4.  Stores the generated image file in a separate **Cloud Storage (Image) Bucket**.
-
-If any file fails during processing, it is automatically moved to a **Cloud Storage (Failed) Bucket**.
+The workflow is:
+1.  **Schedule:** A **Cloud Scheduler** job runs every 15 minutes, sending a trigger message to a Pub/Sub topic.
+2.  **Ingest:** A **Cloud Function**, subscribed to the trigger topic, activates. It fetches the latest articles from the Investing.com "Stock Market News" RSS feed.
+3.  **Publish:** The function parses the XML from the RSS feed and publishes each news article as a distinct message to a second Pub/Sub topic.
+4.  **Process:** A streaming **Dataflow** pipeline, subscribed to the article topic, processes each article in parallel.
+5.  **Analyze & Visualize:** For each article, the Dataflow pipeline uses **Vertex AI** to:
+    *   **Summarize** the article text with the Gemini model.
+    *   **Determine the market sentiment** (Positive, Negative, or Neutral) with Gemini.
+    *   **Generate a sentiment chart icon** with the Imagen model (e.g., a green up-arrow for Positive).
+6.  **Store:** The final, enriched data—including the summary, sentiment, and image URL—is stored in a **BigQuery** table for analysis.
 
 ---
 
@@ -39,50 +43,31 @@ If any file fails during processing, it is automatically moved to a **Cloud Stor
 
 First, let's get your Google Cloud project and Cloud Shell ready.
 
-> **Prerequisite:** You need a Google Cloud account with billing enabled. You can also access the instrumentless credit [here](https://trygcp.dev/claim/accra-roadshow2)
+> **Prerequisite:** You need a Google Cloud account with billing enabled.
 
-### 1.1. Activate Cloud Shell
+### 1.1. Activate Cloud Shell & Open Editor
 
-Cloud Shell is a browser-based command line with all the tools you need.
-
-*   **Action:** In the Google Cloud Console, click the **Activate Cloud Shell** button (`>_`) in the top-right corner. A terminal pane will open at the bottom of your browser.
-*   **Action:** In the Cloud Shell terminal, click the **Open Editor** button (it looks like a pencil) to open the code editor.
+*   **Action:** In the Google Cloud Console, click the **Activate Cloud Shell** button (`>_`).
+*   **Action:** In the Cloud Shell terminal, click the **Open Editor** button.
 
 ### 1.2. Configure Your Project and Region
 
-Run the following commands in the Cloud Shell terminal to set up your environment.
-
 ```bash
-# --- Configuration Commands ---
-
-# 1. Set your Project ID. Replace "your-project-id" with your actual GCP Project ID.
+# 1. Set your Project ID
 gcloud config set project your-project-id
 echo "Project configured."
-```
 
-```bash
-# 2. Store your Project ID and Region in variables for easy use.
-# You can change the region, but make sure it's one where all services are available.
+# 2. Store variables for easy use
 export PROJECT_ID=$(gcloud config get-value project)
-export REGION="us-central1" # A good default region
-```
+export REGION="us-central1"
 
-```bash
-
-# 3. Confirm your settings.
-echo "----------------------------------"
-echo "Using Project ID: $PROJECT_ID"
-echo "Using Region:     $REGION"
-echo "----------------------------------"
+# 3. Confirm your settings
+echo "Using Project ID: $PROJECT_ID in Region: $REGION"
 ```
 
 ### 1.3. Enable Required Google Cloud APIs
 
-This command activates the APIs for the services we'll be using. It might take a minute or two.
-
 ```bash
-# --- Enable APIs Command ---
-echo "Enabling necessary GCP APIs... (This may take a few minutes)"
 gcloud services enable \
   storage.googleapis.com \
   bigquery.googleapis.com \
@@ -90,456 +75,366 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   logging.googleapis.com \
   aiplatform.googleapis.com \
-  iam.googleapis.com
+  iam.googleapis.com \
+  pubsub.googleapis.com \
+  dataflow.googleapis.com \
+  cloudscheduler.googleapis.com
 
 echo "APIs enabled successfully."
-```
-
-### 1.4. Grant Permissions for Cloud Storage Triggers
-
-To allow Cloud Storage to trigger our Cloud Function, we need to give its service account permission to publish events. This is a crucial step for event-driven functions.
-
-```bash
-# --- Grant Pub/Sub Publisher Role to GCS Service Account ---
-
-# 1. Get the special Cloud Storage service account email address.
-export GCS_SERVICE_ACCOUNT=$(gcloud storage service-agent --format 'get(email)')
-```
-```bash
-# 2. Grant the Pub/Sub Publisher role to that service account.
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:${GCS_SERVICE_ACCOUNT}" \
-    --role="roles/pubsub.publisher"
-
-echo "Permissions granted to Cloud Storage service account."
 ```
 
 ---
 
 ## Section 2: Create Your Cloud Resources (Approx. 10 mins)
 
-Next, let's create the storage bucket and BigQuery table that our application will use.
-
-### 2.1. Create a Cloud Storage Bucket
-
-Your bucket needs a globally unique name. We'll use your Project ID to help ensure it's unique.
+### 2.1. Create Cloud Storage Buckets
 
 ```bash
-# --- Create GCS Bucket ---
-# The bucket will be used to upload the CSV files that trigger the process.
-export BUCKET_NAME="ai-content-workshop-${PROJECT_ID}"
-```
+export STAGING_BUCKET_NAME="fintech-workshop-staging-${PROJECT_ID}"
+export SENTIMENT_IMAGES_BUCKET_NAME="fintech-workshop-images-${PROJECT_ID}"
 
-```bash
-gsutil mb -p $PROJECT_ID -l $REGION gs://$BUCKET_NAME
+gsutil mb -p $PROJECT_ID -l $REGION gs://$STAGING_BUCKET_NAME
+gsutil mb -p $PROJECT_ID -l $REGION gs://$SENTIMENT_IMAGES_BUCKET_NAME
 
-echo "Created GCS Bucket: gs://$BUCKET_NAME"
+# Make the image bucket public
+gsutil iam ch allUsers:objectViewer gs://$SENTIMENT_IMAGES_BUCKET_NAME
 
-# Create a bucket for files that cause processing errors
-export FAILED_BUCKET_NAME="ai-content-workshop-failed-${PROJECT_ID}"
-gsutil mb -p $PROJECT_ID -l $REGION gs://$FAILED_BUCKET_NAME
-
-echo "Created GCS Bucket for failed files: gs://$FAILED_BUCKET_NAME"
-
-# Create a bucket for the generated product images
-export PRODUCT_IMAGES_BUCKET_NAME="ai-content-workshop-images-${PROJECT_ID}"
-gsutil mb -p $PROJECT_ID -l $REGION gs://$PRODUCT_IMAGES_BUCKET_NAME
-
-# Make the new image bucket public so the URLs work
-gsutil iam ch allUsers:objectViewer gs://$PRODUCT_IMAGES_BUCKET_NAME
-
-echo "Created public GCS Bucket for product images: gs://$PRODUCT_IMAGES_BUCKET_NAME"
-# You can view your buckets here: https://console.cloud.google.com/storage/browser
+echo "Created 2 GCS Buckets."
 ```
 
 ### 2.2. Create a BigQuery Dataset and Table
 
-Now, create a home for our data in BigQuery.
+```bash
+export BQ_DATASET="market_news_dataset"
+export BQ_TABLE="article_analysis"
+
+bq --location=$REGION mk --dataset ${PROJECT_ID}:${BQ_DATASET}
+
+bq mk --table ${PROJECT_ID}:${BQ_DATASET}.${BQ_TABLE} \
+    article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP
+
+echo "Created BigQuery Dataset and Table."
+```
+
+### 2.3. Create Pub/Sub Topics and Subscription
+
+We need two topics and one subscription for the Dataflow pipeline.
 
 ```bash
-# --- Create BigQuery Dataset and Table ---
-export BQ_DATASET="ai_workshop_dataset"
-export BQ_TABLE="generated_content"
-```
-```bash
-# Create the dataset
-bq --location=$REGION mk --dataset \
-    --description="Dataset for the AI Content Generator Workshop" \
-    ${PROJECT_ID}:${BQ_DATASET}
-```
-```bash
-# Create the table with a defined schema, now including a column for the image URL
-bq mk --table \
-    --description="Stores product info, AI-generated marketing content, and image URLs" \
-    ${PROJECT_ID}:${BQ_DATASET}.${BQ_TABLE} \
-    product_name:STRING,keywords:STRING,generated_content:STRING,generated_image_url:STRING,source_file:STRING,processed_at:TIMESTAMP
+export TRIGGER_TOPIC="rss-ingestion-trigger"
+export ARTICLES_TOPIC="articles-for-analysis"
+export ARTICLES_SUB="articles-for-analysis-sub"
 
-echo "Created BigQuery Dataset '${BQ_DATASET}' and Table '${BQ_TABLE}'"
-# You can view your table here: https://console.cloud.google.com/bigquery
+gcloud pubsub topics create $TRIGGER_TOPIC
+gcloud pubsub topics create $ARTICLES_TOPIC
+gcloud pubsub subscriptions create $ARTICLES_SUB --topic=$ARTICLES_TOPIC
+
+echo "Created 2 Pub/Sub Topics and 1 Subscription."
 ```
 
 ---
 
-## Section 3: Create the Cloud Function (Approx. 15 mins)
-
-This is the core of our workshop. We'll write the Python code that does all the work and tell Google Cloud what libraries it needs.
+## Section 3: Create the Ingestion Cloud Function (Approx. 10 mins)
 
 ### 3.1. Create the Function's Source Code
 
-Instead of manually creating files using a text editor, you can run the following commands in your Cloud Shell terminal. This will create the directory and the necessary source files (`main.py` and `requirements.txt`) for you.
-
-**Action:** Run the following commands to create the function directory and the `main.py` file.
-
 ```bash
-# Create the directory for the function's code
-mkdir -p content-generator-function
-```
-```bash
-# Create the main.py file using a "here document"
-cat > content-generator-function/main.py << EOF
+mkdir -p rss-ingestion-function
+
+# Create main.py
+cat > rss-ingestion-function/main.py << EOF
 import functions_framework
-import vertexai
-
-from google.cloud import bigquery
-from google.cloud import storage
-from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
-from vertexai.preview.vision_models import ImageGenerationModel, Image
-
-import csv
-import logging
+from google.cloud import pubsub_v1
+import feedparser
+import json
 import os
-from datetime import datetime
-from io import StringIO
-import io
+import hashlib
 
-# --- Environment Variables ---
-# These are read once when the function instance starts.
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
-GCP_REGION = os.environ.get("GCP_REGION")
-BQ_DATASET = os.environ.get("BQ_DATASET")
-BQ_TABLE = os.environ.get("BQ_TABLE")
-FAILED_BUCKET_NAME = os.environ.get("FAILED_BUCKET_NAME")
-PRODUCT_IMAGES_BUCKET_NAME = os.environ.get("PRODUCT_IMAGES_BUCKET_NAME")
-
-def move_to_failed_bucket(storage_client, bucket_name, file_name):
-    """Moves a file to the designated 'failed' bucket."""
-    if not FAILED_BUCKET_NAME:
-        logging.error("FAILED_BUCKET_NAME environment variable not set. Cannot move file.")
-        return
-
-    source_bucket = storage_client.bucket(bucket_name)
-    destination_bucket = storage_client.bucket(FAILED_BUCKET_NAME)
-    source_blob = source_bucket.blob(file_name)
-
-    # To move, we copy the file and then delete the original
-    try:
-        destination_blob = source_bucket.copy_blob(source_blob, destination_bucket, file_name)
-        source_blob.delete()
-        logging.info(f"Moved '{file_name}' to failed bucket: gs://{FAILED_BUCKET_NAME}/{destination_blob.name}")
-    except Exception as e:
-        logging.error(f"Failed to move '{file_name}' to failed bucket: {e}", exc_info=True)
+ARTICLES_TOPIC = os.environ.get("ARTICLES_TOPIC")
+RSS_FEED_URL = "https://www.investing.com/rss/news_25.rss"
 
 @functions_framework.cloud_event
-def process_csv_and_generate_content(cloud_event):
-    # : Initialize Clients within the function handler ---
-    try:
-        storage_client = storage.Client()
-        bq_client = bigquery.Client()
-        vertexai.init(project=GCP_PROJECT_ID, location=GCP_REGION)
-        # Add safety settings to the model to block harmful content.
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+def fetch_and_publish_rss(cloud_event):
+    publisher = pubsub_v1.PublisherClient()
+    topic_path = publisher.topic_path(GCP_PROJECT_ID, ARTICLES_TOPIC)
+
+    feed = feedparser.parse(RSS_FEED_URL)
+
+    for entry in feed.entries:
+        article_id = hashlib.md5(entry.link.encode()).hexdigest()
+        message_data = {
+            "article_id": article_id,
+            "headline": entry.title,
+            "full_text": entry.summary,
+            "link": entry.link
         }
-        text_model = GenerativeModel("gemini-2.5-pro", safety_settings=safety_settings)
-        image_model = ImageGenerationModel.from_pretrained("imagegeneration@006")
-        logging.info("Successfully initialized clients and Vertex AI models for this invocation.")
-    except Exception as e:
-        logging.error(f"CRITICAL: Failed to initialize clients or models: {e}", exc_info=True)
-        # If clients fail, we can't proceed.
-        return "Initialization failed", 500
-
-    data = cloud_event.data
-    bucket_name = data["bucket"]
-    file_name = data["name"]
-    logging.info(f"Triggered by file: gs://{bucket_name}/{file_name}")
-
-    # --- File Download and Processing ---
-    try:
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(file_name)
-        csv_content = blob.download_as_text(encoding="utf-8")
-        logging.info(f"Successfully downloaded '{file_name}'.")
-
-        rows_to_insert = []
-        reader = csv.reader(StringIO(csv_content))
-
-        try:
-            header = next(reader)
-            logging.info(f"CSV Header: {header}")
-        except StopIteration:
-            raise ValueError(f"CSV file '{file_name}' is empty or has no header.")
-
-        # --- Process Rows and Generate Content ---
-        for i, row in enumerate(reader):
-            if len(row) != 2:
-                logging.warning(f"Skipping malformed row #{i+2} in '{file_name}': {row}")
-                continue
-
-            product_name, keywords = row[0].strip(), row[1].strip()
-
-            if not product_name and not keywords:
-                logging.info(f"Skipping empty row #{i+2} in '{file_name}'.")
-                continue
-
-            generated_image_url = None
-            try:
-                # 1. Generate Text
-                prompt = f"Write a short, exciting marketing description for a product named '{product_name}' that is '{keywords}'. The description should be one paragraph."
-                response = text_model.generate_content(prompt)
-
-                if not response.candidates:
-                    generated_text = "Content blocked by safety filter."
-                    logging.warning(f"Content generation for '{product_name}' was blocked by safety filters.")
-                elif hasattr(response.candidates[0].content, 'text'):
-                    generated_text = response.candidates[0].content.text.strip()
-                    logging.info(f"Generated content for '{product_name}'.")
-                else:
-                    generated_text = "Error: No content generated by model."
-                    logging.warning(f"Model response for '{product_name}' lacked a 'text' attribute.")
-
-                # 2. Generate Image (only if text was successful)
-                if "Error:" not in generated_text and "Content blocked" not in generated_text:
-                    try:
-                        image_prompt = f"A professional, high-resolution marketing photo, studio lighting, of: {generated_text}"
-                        images = image_model.generate_images(
-                            prompt=image_prompt,
-                            number_of_images=1,
-                        )
-
-                        # Add a check to ensure images were actually generated before proceeding.
-                        if images:
-                            image_bytes = images[0]._image_bytes
-                            image_blob_name = f"{product_name.replace(' ', '_').lower()}_{int(datetime.utcnow().timestamp())}.png"
-
-                            image_bucket = storage_client.bucket(PRODUCT_IMAGES_BUCKET_NAME)
-                            image_blob = image_bucket.blob(image_blob_name)
-                            # Use io.BytesIO to upload from memory
-                            image_blob.upload_from_file(io.BytesIO(image_bytes), content_type="image/png")
-
-                            generated_image_url = image_blob.public_url
-                            logging.info(f"Successfully generated and uploaded image for '{product_name}' to {generated_image_url}")
-                        else:
-                            logging.warning(f"Image generation for '{product_name}' returned no images, possibly due to safety filters.")
-                            generated_image_url = "Error: No image generated by model."
-
-                    except Exception as img_e:
-                        logging.error(f"Failed to generate image for '{product_name}': {img_e}", exc_info=True)
-                        generated_image_url = "Error: Could not generate image."
-
-            except Exception as e:
-                logging.error(f"Failed to generate content for '{product_name}': {e}", exc_info=True)
-                generated_text = "Error: Could not generate content due to an exception."
-                generated_image_url = "Error: Could not generate image."
-
-            rows_to_insert.append({
-                "product_name": product_name,
-                "keywords": keywords,
-                "generated_content": generated_text,
-                "generated_image_url": generated_image_url,
-                "source_file": f"gs://{bucket_name}/{file_name}",
-                "processed_at": datetime.utcnow().isoformat()
-            })
-
-        if not rows_to_insert:
-            raise ValueError(f"No valid data rows were processed from '{file_name}'.")
-
-    except Exception as e:
-        # This is the main error handler. If anything goes wrong during download or processing,
-        # log the error and move the file to the failed bucket.
-        logging.error(f"Critical error processing file '{file_name}': {e}", exc_info=True)
-        move_to_failed_bucket(storage_client, bucket_name, file_name)
-        return # Stop execution for this file
-
-    # --- Insert into BigQuery ---
-    try:
-        table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
-        errors = bq_client.insert_rows_json(table_id, rows_to_insert)
-        if not errors:
-            logging.info(f"Successfully inserted {len(rows_to_insert)} rows into BigQuery from '{file_name}'.")
-        else:
-            # Improved error logging for BigQuery
-            error_details = [str(e) for e in errors]
-            logging.error(f"Encountered errors inserting into BigQuery: {'; '.join(error_details)}")
-    except Exception as e:
-        logging.error(f"Failed to insert rows into BigQuery: {e}", exc_info=True)
-
+        future = publisher.publish(topic_path, json.dumps(message_data).encode("utf-8"))
+        future.result()
     return "OK"
 EOF
-```
 
-**Action:** Run the following command to create the `requirements.txt` file.
-
-```bash
-# Create the requirements.txt file
-cat > content-generator-function/requirements.txt << EOF
-# This file lists the Python packages required by the Cloud Function.
-# The Google Cloud Functions environment will automatically install these
-# dependencies when the function is deployed.
+# Create requirements.txt
+cat > rss-ingestion-function/requirements.txt << EOF
 functions-framework>=3.0.0
-google-cloud-storage>=2.0.0
-google-cloud-bigquery>=3.0.0
-google-cloud-aiplatform[generative_models]>=1.38.0
+google-cloud-pubsub>=2.13.0
+feedparser>=6.0.0
 EOF
-
-echo "Cloud Function source files created successfully."
 ```
 
-### 3.3. Deploy the Cloud Function
-
-Now, run this command in the Cloud Shell terminal to deploy your function. This step will take a few minutes.
+### 3.2. Deploy the Cloud Function
 
 ```bash
-# --- Deploy Cloud Function ---
-# First, navigate into your function's directory
-cd content-generator-function
-```
-```bash
-# Now, deploy the function
-gcloud functions deploy generate-content-from-csv \
+cd rss-ingestion-function
+
+gcloud functions deploy fetch-and-publish-rss \
   --gen2 \
   --runtime=python311 \
   --region=$REGION \
   --source=. \
-  --entry-point=process_csv_and_generate_content \
-  --trigger-bucket=$BUCKET_NAME \
-  --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=$REGION,BQ_DATASET=$BQ_DATASET,BQ_TABLE=$BQ_TABLE,FAILED_BUCKET_NAME=$FAILED_BUCKET_NAME,PRODUCT_IMAGES_BUCKET_NAME=$PRODUCT_IMAGES_BUCKET_NAME \
-  --memory=2Gi \
-  --timeout=540s
+  --entry-point=fetch_and_publish_rss \
+  --trigger-topic=$TRIGGER_TOPIC \
+  --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,ARTICLES_TOPIC=$ARTICLES_TOPIC \
+  --memory=512Mi \
+  --timeout=120s
 
-
-echo "Cloud Function deployment initiated."
-# Return to the parent directory
 cd ..
+echo "Cloud Function deployment initiated."
 ```
 
 ---
 
-## Section 4: Test Your AI Content Generator (Approx. 10 mins)
+## Section 4: Create the Dataflow Analysis Pipeline (Approx. 15 mins)
 
-Let's see our creation in action!
-
-### 4.1. Create a Sample CSV File
-
-*   **Action:** In the Cloud Shell Editor, create a new file in your root directory named `products.csv`.
-*   **Action:** Copy and paste the following sample data into `products.csv`. Feel free to add your own products!
-
-```csv
-product_name,keywords
-"TerraTrek Hiking Boots","waterproof, breathable, all-terrain grip"
-"PowerStack Go","portable charger, 20000mAh, fast-charging, multi-device"
-"FitTrack Pro Watch","heart rate monitor, GPS, sleep tracking"
-"Gourmet Grind Coffee Maker","built-in burr grinder, programmable, thermal carafe"
-"RoboVac Plus","robotic vacuum, smart mapping, self-emptying"
-"Voyager Travel Backpack","anti-theft, laptop compartment, water-resistant"
-"PureAir Purifier","HEPA filter, quiet operation, smart sensor"
-"FlexiDesk Stand","adjustable height, ergonomic, standing desk converter"
-```
-
-### 4.2. Upload the File to Cloud Storage
-
-This is the trigger for our whole process.
+### 4.1. Create the Dataflow Pipeline's Source Code
 
 ```bash
-# --- Upload CSV to Trigger the Function ---
-gsutil cp products.csv gs://$BUCKET_NAME/
+mkdir -p analysis-dataflow-pipeline
 
-echo "Uploaded products.csv to gs://$BUCKET_NAME to trigger the function."
+# Create pipeline.py
+cat > analysis-dataflow-pipeline/pipeline.py << EOF
+import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions
+import argparse
+import logging
+import json
+from datetime import datetime
+import io
+
+from google.cloud import storage
+import vertexai
+from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
+from vertexai.preview.vision_models import ImageGenerationModel
+
+class AnalyzeArticle(beam.DoFn):
+    def __init__(self, project_id, region, sentiment_images_bucket_name):
+        self.project_id = project_id
+        self.region = region
+        self.sentiment_images_bucket_name = sentiment_images_bucket_name
+
+    def setup(self):
+        vertexai.init(project=self.project_id, location=self.region)
+        self.text_model = GenerativeModel("gemini-1.0-pro")
+        self.image_model = ImageGenerationModel.from_pretrained("imagegeneration@006")
+        self.storage_client = storage.Client()
+
+    def process(self, element):
+        try:
+            summary_prompt = f"You are a financial analyst. Summarize the key points of this article for a busy trader in three bullet points: '{element['full_text']}'"
+            summary_response = self.text_model.generate_content(summary_prompt)
+            summary = summary_response.text
+
+            sentiment_prompt = f"Based on the headline and summary, what is the market sentiment? Respond with only one word: Positive, Negative, or Neutral. Headline: '{element['headline']}' Summary: '{summary}'"
+            sentiment_response = self.text_model.generate_content(sentiment_prompt)
+            sentiment = sentiment_response.text.strip()
+            if sentiment not in ["Positive", "Negative", "Neutral"]:
+                sentiment = "Neutral"
+
+            image_prompt = f"Create a simple, abstract stock market chart icon that visually represents a '{sentiment}' trend."
+            images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
+
+            image_bytes = images[0]._image_bytes
+            image_blob_name = f"{element['article_id']}_{sentiment.lower()}.png"
+
+            image_bucket = self.storage_client.bucket(self.sentiment_images_bucket_name)
+            image_blob = image_bucket.blob(image_blob_name)
+            image_blob.upload_from_file(io.BytesIO(image_bytes), content_type="image/png")
+            sentiment_chart_url = image_blob.public_url
+
+            yield {
+                "article_id": element['article_id'],
+                "headline": element['headline'],
+                "summary": summary,
+                "sentiment": sentiment,
+                "sentiment_chart_url": sentiment_chart_url,
+                "processed_at": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            logging.error(f"Failed to process article {element['article_id']}: {e}")
+            pass
+
+def run():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input_subscription', required=True)
+    parser.add_argument('--output_table', required=True)
+    parser.add_argument('--sentiment_images_bucket_name', required=True)
+    parser.add_argument('--project_id', required=True)
+    parser.add_argument('--region', required=True)
+
+    known_args, pipeline_args = parser.parse_known_args()
+    pipeline_options = PipelineOptions(pipeline_args, streaming=True)
+
+    with beam.Pipeline(options=pipeline_options) as p:
+        (p | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription)
+           | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
+           | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
+               project_id=known_args.project_id,
+               region=known_args.region,
+               sentiment_images_bucket_name=known_args.sentiment_images_bucket_name
+            ))
+           | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
+               known_args.output_table,
+               schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
+               write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
+           )
+        )
+
+if __name__ == '__main__':
+    logging.getLogger().setLevel(logging.INFO)
+    run()
+EOF
+
+# Create requirements.txt
+cat > analysis-dataflow-pipeline/requirements.txt << EOF
+apache-beam[gcp]>=2.40.0
+google-cloud-aiplatform[generative_models]>=1.38.0
+google-cloud-storage>=2.0.0
+EOF
+
+# Create metadata.json for the Flex Template
+cat > analysis-dataflow-pipeline/metadata.json << EOF
+{
+    "name": "Market News Analysis",
+    "description": "A Dataflow pipeline that analyzes financial news with Vertex AI.",
+    "parameters": [
+        { "name": "input_subscription", "label": "Input Pub/Sub subscription", "param_type": "TEXT" },
+        { "name": "output_table", "label": "Output BigQuery table", "param_type": "TEXT" },
+        { "name": "sentiment_images_bucket_name", "label": "Sentiment images bucket", "param_type": "TEXT" },
+        { "name": "project_id", "label": "Project ID", "param_type": "TEXT" },
+        { "name": "region", "label": "Region", "param_type": "TEXT" }
+    ]
+}
+EOF
+
+# Create Dockerfile for the Flex Template
+cat > analysis-dataflow-pipeline/Dockerfile << EOF
+# Dockerfile for Dataflow Flex Template
+FROM gcr.io/dataflow-templates-base/python3-template-launcher-base
+
+# Set the working directory
+WORKDIR /template
+
+# Copy the requirements file and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the pipeline source code
+COPY pipeline.py .
+
+# Set the entrypoint for the template launcher
+ENV FLEX_TEMPLATE_PYTHON_PY_FILE=/template/pipeline.py
+EOF
 ```
 
-### 4.3. Verify the Results in BigQuery
-
-Wait about a minute for the function to trigger and process the file. Then, run this query in the Cloud Shell to see the results.
+### 4.2. Deploy the Dataflow Pipeline
 
 ```bash
-# --- Query BigQuery to See Results ---
-bq query --project_id=$PROJECT_ID "SELECT product_name, generated_content FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\` ORDER BY processed_at DESC LIMIT 10"
+export TEMPLATE_IMAGE="gcr.io/${PROJECT_ID}/dataflow/fintech-analysis:latest"
+export TEMPLATE_PATH="gs://${STAGING_BUCKET_NAME}/templates/fintech_analysis_template.json"
+
+# Build the Docker image for the Flex Template
+gcloud builds submit --tag $TEMPLATE_IMAGE analysis-dataflow-pipeline
+
+# Create the Flex Template spec file
+gcloud dataflow flex-template build $TEMPLATE_PATH \
+  --image $TEMPLATE_IMAGE \
+  --sdk-language PYTHON \
+  --metadata-file analysis-dataflow-pipeline/metadata.json
+
+# Run the Flex Template to start the streaming job
+gcloud dataflow flex-template run "fintech-news-analysis-`date +%Y%m%d-%H%M%S`" \
+    --template-file-gcs-location $TEMPLATE_PATH \
+    --project $PROJECT_ID \
+    --region $REGION \
+    --parameters input_subscription=projects/$PROJECT_ID/subscriptions/$ARTICLES_SUB \
+    --parameters output_table=$PROJECT_ID:$BQ_DATASET.$BQ_TABLE \
+    --parameters sentiment_images_bucket_name=$SENTIMENT_IMAGES_BUCKET_NAME \
+    --parameters project_id=$PROJECT_ID \
+    --parameters region=$REGION
 ```
 
-You should see a table with your product names and the unique marketing descriptions generated by Gemini!
+---
+
+## Section 5: Schedule and Verify the Pipeline (Approx. 5 mins)
+
+### 5.1. Schedule the Ingestion Job
+
+Create the Cloud Scheduler job to run the pipeline automatically every 15 minutes.
+
+```bash
+gcloud scheduler jobs create pubsub trigger-rss-ingestion-job \
+    --schedule "*/15 * * * *" \
+    --topic $TRIGGER_TOPIC \
+    --message-body "Run" \
+    --location $REGION
+```
+
+### 5.2. Manually Trigger the Pipeline (Optional)
+
+You can wait for the scheduler, or trigger it manually to see results faster.
+
+```bash
+gcloud scheduler jobs run trigger-rss-ingestion-job --location $REGION
+```
+
+### 5.3. Verify the Results in BigQuery
+
+Wait a few minutes for the data to flow through the pipeline. Then, query your BigQuery table.
+
+```bash
+bq query "SELECT headline, summary, sentiment, sentiment_chart_url FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\` ORDER BY processed_at DESC LIMIT 10"
+```
+
+You should see the latest financial news headlines, along with the AI-generated summary, sentiment, and a link to the sentiment chart icon!
 
 ---
 
-## Section 5: Implemented Feature: Content Moderation
-
-In any application that generates content, it's crucial to ensure the output is safe and appropriate. The Vertex AI Gemini API includes built-in safety filters to help you moderate content. The Cloud Function has been automatically updated to enable these filters, preventing the generation of harmful text.
-
-When Gemini blocks content due to a safety policy, the function will now log a warning and write a placeholder message, "Content blocked by safety filter," to BigQuery.
-
-The `main.py` file created in Section 3 now includes this moderation logic. The key changes were:
-1.  **Importing `HarmCategory` and `HarmBlockThreshold`** to define the safety rules.
-2.  **Initializing the `GenerativeModel` with `safety_settings`**, which instructs the model to block content that reaches a medium or high probability of being harmful across several categories.
-3.  **Checking `response.candidates`**: If this list is empty after a generation call, it confirms the content was blocked, and the function handles it gracefully.
-
-You can now proceed to the next section to test the full pipeline, now with enhanced safety features.
-
----
-
-## Section 6: Implemented Feature: Robust Error Handling
-
-To make our pipeline more resilient, the Cloud Function has been updated to handle processing failures gracefully. If a file is uploaded that is empty, malformed, or causes any other critical error during processing, the function will now automatically move it to a separate "failed files" bucket for you to inspect later.
-
-This prevents a single bad file from blocking the entire content generation process.
-
-The key changes were:
-1.  **Creating a `FAILED_BUCKET_NAME`**: A second Cloud Storage bucket is now created to isolate problematic files.
-2.  **Passing the Bucket Name as an Environment Variable**: The deploy command was updated to pass the new bucket's name to the function.
-3.  **Implementing `move_to_failed_bucket`**: A helper function was added to handle the logic of moving a file from the main bucket to the failed bucket.
-4.  **Adding a Global `try...except` Block**: The core file processing logic is now wrapped in an error handler. If any exception occurs, it's caught, the error is logged, and the file is moved, ensuring the function exits cleanly.
-
----
-
-## Section 7: Implemented Feature: AI-Powered Image Generation
-
-The pipeline is now a truly multi-modal content factory. In addition to generating marketing text, the Cloud Function now calls a second powerful Vertex AI model, **Imagen**, to create a unique product image based on the text description it just wrote.
-
-This showcases the power of chaining different AI models together to build sophisticated, automated workflows.
-
-The key changes to implement this were:
-1.  **Creating a Public Image Bucket**: A new, publicly-accessible Cloud Storage bucket is created to store the generated images so their URLs can be shared.
-2.  **Adding an Image URL Column to BigQuery**: The BigQuery table schema was altered to include a `generated_image_url` column.
-3.  **Initializing the `ImageGenerationModel`**: The function now initializes the `imagegeneration@006` model in addition to the Gemini text model.
-4.  **Implementing the Image Generation Flow**:
-    *   After text is generated, a new prompt is created for the image model.
-    *   The model generates the image, which is returned as raw bytes.
-    *   The function uploads these bytes to the public image bucket, creating a `.png` file.
-    *   The public URL of this new image is saved to the `generated_image_url` column in BigQuery.
-
----
-
-## Section 8: Conclusion & Cleanup
-
-Congratulations! You've successfully built and tested a serverless AI application on Google Cloud. You learned how to connect several powerful services to create an intelligent, automated workflow.
-
-### 8.1. Cleanup
+## Section 6: Cleanup
 
 To avoid ongoing charges, run these commands to delete the resources you created.
 
 ```bash
 # ---- Cleanup Commands ----
+# 1. Stop the Dataflow Job
+export JOB_ID=$(gcloud dataflow jobs list --region=$REGION --filter="name:fintech-news-analysis" --format="get(id)")
+gcloud dataflow jobs drain $JOB_ID --region=$REGION --quiet
 
-# 1. Delete the Cloud Function
-gcloud functions delete generate-content-from-csv --region=$REGION --gen2 --quiet
+# 2. Delete the Cloud Scheduler Job
+gcloud scheduler jobs delete trigger-rss-ingestion-job --location $REGION --quiet
 
-# 2. Delete the GCS Bucket (the -r and -f flags remove all contents first)
-gsutil rm -r -f gs://$BUCKET_NAME
+# 3. Delete the Cloud Function
+gcloud functions delete fetch-and-publish-rss --region=$REGION --gen2 --quiet
 
-# 3. Delete the BigQuery Dataset (the -r and -f flags remove all tables first)
+# 4. Delete the GCS Buckets
+gsutil rm -r -f gs://$STAGING_BUCKET_NAME gs://$SENTIMENT_IMAGES_BUCKET_NAME
+
+# 5. Delete the BigQuery Dataset
 bq rm -r -f --dataset ${PROJECT_ID}:${BQ_DATASET}
 
-echo "Cleanup complete. All resources have been deleted."
-```
+# 6. Delete the Pub/Sub Topics and Subscription
+gcloud pubsub subscriptions delete $ARTICLES_SUB --project=$PROJECT_ID
+gcloud pubsub topics delete $TRIGGER_TOPIC --project=$PROJECT_ID
+gcloud pubsub topics delete $ARTICLES_TOPIC --project=$PROJECT_ID
 
-**Thank you for participating in the workshop!**
+echo "Cleanup complete."
+```
