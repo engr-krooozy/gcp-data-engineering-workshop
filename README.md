@@ -195,8 +195,8 @@ gcloud functions deploy fetch-and-publish-rss \
   --entry-point=fetch_and_publish_rss \
   --trigger-topic=$TRIGGER_TOPIC \
   --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,ARTICLES_TOPIC=$ARTICLES_TOPIC \
-  --memory=512Mi \
-  --timeout=120s
+  --memory=2Gi \
+  --timeout=3600s
 
 cd ..
 echo "Cloud Function deployment initiated."
