@@ -290,7 +290,7 @@ class AnalyzeArticle(beam.DoFn):
     def setup(self):
         # Initialize the Vertex AI clients. This is done once per worker.
         vertexai.init(project=self.project_id, location=self.region)
-        self.text_model = GenerativeModel("gemini-1.0-pro", safety_settings={
+        self.text_model = GenerativeModel("gemini-2.5-pro", safety_settings={
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
         })
