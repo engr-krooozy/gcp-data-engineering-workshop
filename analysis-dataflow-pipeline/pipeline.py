@@ -1,6 +1,5 @@
 import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
-import argparse
+from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions, SetupOptions
 import logging
 import json
 from datetime import datetime
@@ -10,6 +9,15 @@ from google.cloud import storage
 import vertexai
 from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
 from vertexai.preview.vision_models import ImageGenerationModel
+
+# --- Custom Pipeline Options ---
+class MarketNewsPipelineOptions(PipelineOptions):
+    """Custom options for the Market News Analysis pipeline."""
+    @classmethod
+    def _add_argparse_args(cls, parser):
+        parser.add_argument('--input_subscription', required=True, help='Pub/Sub subscription to read from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>')
+        parser.add_argument('--output_table', required=True, help='BigQuery table to write to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>')
+        parser.add_argument('--sentiment_images_bucket_name', required=True, help='GCS bucket to store generated sentiment chart icons.')
 
 # This DoFn class encapsulates the logic to call the Vertex AI APIs
 class AnalyzeArticle(beam.DoFn):
@@ -70,30 +78,28 @@ class AnalyzeArticle(beam.DoFn):
             pass
 
 def run():
-    # Set up command-line argument parsing
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input_subscription', required=True, help='Pub/Sub subscription to read from.')
-    parser.add_argument('--output_table', required=True, help='BigQuery table to write to.')
-    parser.add_argument('--sentiment_images_bucket_name', required=True, help='GCS bucket for sentiment images.')
-
-    known_args, pipeline_args = parser.parse_known_args()
-    pipeline_options = PipelineOptions(pipeline_args, streaming=True)
+    """Defines and runs the Dataflow pipeline."""
+    pipeline_options = PipelineOptions(streaming=True)
+    custom_options = pipeline_options.view_as(MarketNewsPipelineOptions)
     gcp_options = pipeline_options.view_as(GoogleCloudOptions)
 
-    # Define and run the pipeline
+    # This is necessary for Dataflow to pickle the main session
+    pipeline_options.view_as(SetupOptions).save_main_session = True
+
     with beam.Pipeline(options=pipeline_options) as p:
-        (p | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription)
-           | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
-           | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
-               project_id=gcp_options.project,
-               region=gcp_options.region,
-               sentiment_images_bucket_name=known_args.sentiment_images_bucket_name
-            ))
-           | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
-               known_args.output_table,
-               schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
-               write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-               create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER
+        (p
+         | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=custom_options.input_subscription)
+         | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
+         | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
+             project_id=gcp_options.project,
+             region=gcp_options.region,
+             sentiment_images_bucket_name=custom_options.sentiment_images_bucket_name
+           ))
+         | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
+             custom_options.output_table,
+             schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
+             write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+             create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
            )
         )
 
