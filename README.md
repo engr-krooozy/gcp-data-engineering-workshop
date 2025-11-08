@@ -149,29 +149,75 @@ import feedparser
 import json
 import os
 import hashlib
+import logging
 
-GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
-ARTICLES_TOPIC = os.environ.get("ARTICLES_TOPIC")
-RSS_FEED_URL = "https://www.investing.com/rss/news_25.rss"
+# Configure basic logging to view output in Cloud Logging
+logging.basicConfig(level=logging.INFO)
 
 @functions_framework.cloud_event
 def fetch_and_publish_rss(cloud_event):
-    publisher = pubsub_v1.PublisherClient()
-    topic_path = publisher.topic_path(GCP_PROJECT_ID, ARTICLES_TOPIC)
+    """
+    Triggered by a Pub/Sub message to fetch an RSS feed and publish each article
+    to another Pub/Sub topic.
+    """
+    logging.info("Cloud Function 'fetch_and_publish_rss' invoked.")
 
-    feed = feedparser.parse(RSS_FEED_URL)
+    # --- 1. Configuration and Validation ---
+    gcp_project_id = os.environ.get("GCP_PROJECT_ID")
+    articles_topic = os.environ.get("ARTICLES_TOPIC")
+    rss_feed_url = "https://www.investing.com/rss/news_25.rss"
 
-    for entry in feed.entries:
-        article_id = hashlib.md5(entry.link.encode()).hexdigest()
-        message_data = {
-            "article_id": article_id,
-            "headline": entry.title,
-            "full_text": entry.summary,
-            "link": entry.link
-        }
-        future = publisher.publish(topic_path, json.dumps(message_data).encode("utf-8"))
-        future.result()
-    return "OK"
+    if not gcp_project_id or not articles_topic:
+        logging.error("FATAL: Missing required environment variables: GCP_PROJECT_ID or ARTICLES_TOPIC.")
+        return "Configuration Error", 500
+
+    logging.info(f"Project ID: {gcp_project_id}, Articles Topic: {articles_topic}")
+
+    try:
+        # --- 2. Fetch RSS Feed ---
+        logging.info(f"Fetching RSS feed from: {rss_feed_url}")
+        feed = feedparser.parse(rss_feed_url)
+
+        if not feed.entries:
+            logging.warning("No new articles found in the RSS feed.")
+            return "OK - No new articles", 200
+
+        logging.info(f"Found {len(feed.entries)} articles in the RSS feed.")
+
+        # --- 3. Publish to Pub/Sub ---
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(gcp_project_id, articles_topic)
+
+        published_count = 0
+        for entry in feed.entries:
+            try:
+                article_id = hashlib.md5(entry.link.encode()).hexdigest()
+
+                # Safely get article content, falling back from 'summary' to 'description'
+                full_text = entry.get('summary', entry.get('description', ''))
+
+                message_data = {
+                    "article_id": article_id,
+                    "headline": entry.title,
+                    "full_text": full_text,
+                    "link": entry.link
+                }
+
+                message_bytes = json.dumps(message_data).encode("utf-8")
+                future = publisher.publish(topic_path, message_bytes)
+                future.result()  # Wait for the publish to complete
+                published_count += 1
+                logging.info(f"Successfully published article ID: {article_id}")
+
+            except Exception as e:
+                logging.error(f"Failed to process or publish article: {entry.get('title', 'N/A')}. Error: {e}", exc_info=True)
+
+        logging.info(f"Function complete. Successfully published {published_count} of {len(feed.entries)} articles.")
+        return "OK", 200
+
+    except Exception as e:
+        logging.error(f"An unexpected error occurred in the function: {e}", exc_info=True)
+        return "Internal Server Error", 500
 EOF
 
 # Create requirements.txt
@@ -214,8 +260,7 @@ mkdir -p analysis-dataflow-pipeline
 # Create pipeline.py
 cat > analysis-dataflow-pipeline/pipeline.py << EOF
 import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
-import argparse
+from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions, SetupOptions
 import logging
 import json
 from datetime import datetime
@@ -226,6 +271,16 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
 from vertexai.preview.vision_models import ImageGenerationModel
 
+# --- Custom Pipeline Options ---
+class MarketNewsPipelineOptions(PipelineOptions):
+    """Custom options for the Market News Analysis pipeline."""
+    @classmethod
+    def _add_argparse_args(cls, parser):
+        parser.add_argument('--input_subscription', required=True, help='Pub/Sub subscription to read from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>')
+        parser.add_argument('--output_table', required=True, help='BigQuery table to write to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>')
+        parser.add_argument('--sentiment_images_bucket_name', required=True, help='GCS bucket to store generated sentiment chart icons.')
+
+# This DoFn class encapsulates the logic to call the Vertex AI APIs
 class AnalyzeArticle(beam.DoFn):
     def __init__(self, project_id, region, sentiment_images_bucket_name):
         self.project_id = project_id
@@ -233,23 +288,31 @@ class AnalyzeArticle(beam.DoFn):
         self.sentiment_images_bucket_name = sentiment_images_bucket_name
 
     def setup(self):
+        # Initialize the Vertex AI clients. This is done once per worker.
         vertexai.init(project=self.project_id, location=self.region)
-        self.text_model = GenerativeModel("gemini-1.0-pro")
+        self.text_model = GenerativeModel("gemini-1.0-pro", safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        })
         self.image_model = ImageGenerationModel.from_pretrained("imagegeneration@006")
         self.storage_client = storage.Client()
 
     def process(self, element):
         try:
+            # --- 1. Summarization ---
             summary_prompt = f"You are a financial analyst. Summarize the key points of this article for a busy trader in three bullet points: '{element['full_text']}'"
             summary_response = self.text_model.generate_content(summary_prompt)
-            summary = summary_response.text
+            summary = summary_response.text.strip() if hasattr(summary_response, 'text') else "Error: Could not generate summary."
 
-            sentiment_prompt = f"Based on the headline and summary, what is the market sentiment? Respond with only one word: Positive, Negative, or Neutral. Headline: '{element['headline']}' Summary: '{summary}'"
+            # --- 2. Sentiment Analysis ---
+            sentiment_prompt = f"Based on the following headline and summary, what is the market sentiment? Respond with only one word: Positive, Negative, or Neutral. Headline: '{element['headline']}' Summary: '{summary}'"
             sentiment_response = self.text_model.generate_content(sentiment_prompt)
-            sentiment = sentiment_response.text.strip()
+            sentiment = sentiment_response.text.strip() if hasattr(sentiment_response, 'text') else "Neutral"
+            # Basic validation to ensure the sentiment is one of the three expected values
             if sentiment not in ["Positive", "Negative", "Neutral"]:
                 sentiment = "Neutral"
 
+            # --- 3. Image Generation ---
             image_prompt = f"Create a simple, abstract stock market chart icon that visually represents a '{sentiment}' trend."
             images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
 
@@ -261,6 +324,7 @@ class AnalyzeArticle(beam.DoFn):
             image_blob.upload_from_file(io.BytesIO(image_bytes), content_type="image/png")
             sentiment_chart_url = image_blob.public_url
 
+            # Yield the final, enriched record
             yield {
                 "article_id": element['article_id'],
                 "headline": element['headline'],
@@ -270,31 +334,33 @@ class AnalyzeArticle(beam.DoFn):
                 "processed_at": datetime.utcnow().isoformat()
             }
         except Exception as e:
-            logging.error(f"Failed to process article {element['article_id']}: {e}")
+            logging.error(f"Failed to process article {element['article_id']}: {e}", exc_info=True)
+            # Optionally, you could output to a dead-letter queue here
             pass
 
 def run():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input_subscription', required=True)
-    parser.add_argument('--output_table', required=True)
-    parser.add_argument('--sentiment_images_bucket_name', required=True)
-
-    known_args, pipeline_args = parser.parse_known_args()
-    pipeline_options = PipelineOptions(pipeline_args, streaming=True)
+    """Defines and runs the Dataflow pipeline."""
+    pipeline_options = PipelineOptions(streaming=True)
+    custom_options = pipeline_options.view_as(MarketNewsPipelineOptions)
     gcp_options = pipeline_options.view_as(GoogleCloudOptions)
 
+    # This is necessary for Dataflow to pickle the main session
+    pipeline_options.view_as(SetupOptions).save_main_session = True
+
     with beam.Pipeline(options=pipeline_options) as p:
-        (p | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription)
-           | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
-           | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
-               project_id=gcp_options.project,
-               region=gcp_options.region,
-               sentiment_images_bucket_name=known_args.sentiment_images_bucket_name
-            ))
-           | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
-               known_args.output_table,
-               schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
-               write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
+        (p
+         | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=custom_options.input_subscription)
+         | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
+         | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
+             project_id=gcp_options.project,
+             region=gcp_options.region,
+             sentiment_images_bucket_name=custom_options.sentiment_images_bucket_name
+           ))
+         | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
+             custom_options.output_table,
+             schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
+             write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+             create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
            )
         )
 
@@ -320,19 +386,19 @@ cat > analysis-dataflow-pipeline/metadata.json << EOF
             "name": "input_subscription",
             "label": "Input Pub/Sub subscription",
             "helpText": "The Pub/Sub subscription to read messages from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>",
-            "param_type": "TEXT"
+            "paramType": "TEXT"
         },
         {
             "name": "output_table",
             "label": "Output BigQuery table",
             "helpText": "The BigQuery table to write results to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>",
-            "param_type": "TEXT"
+            "paramType": "TEXT"
         },
         {
             "name": "sentiment_images_bucket_name",
             "label": "Sentiment images bucket name",
             "helpText": "The GCS bucket to store generated sentiment chart icons in.",
-            "param_type": "TEXT"
+            "paramType": "TEXT"
         }
     ]
 }
