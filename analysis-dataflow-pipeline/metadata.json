@@ -19,12 +19,6 @@
             "label": "Sentiment images bucket name",
             "helpText": "The GCS bucket to store generated sentiment chart icons in.",
             "paramType": "TEXT"
-        },
-        {
-            "name": "custom_gcp_temp_location",
-            "label": "Custom GCP Temp Location",
-            "helpText": "A GCS bucket for temporary files, e.g., gs://<YOUR_STAGING_BUCKET>/tmp",
-            "paramType": "TEXT"
         }
     ]
 }
