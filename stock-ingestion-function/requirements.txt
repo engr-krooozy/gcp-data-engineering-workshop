@@ -1,3 +1,4 @@
 functions-framework>=3.0.0
 google-cloud-pubsub>=2.13.0
-feedparser>=6.0.0
+yfinance>=0.2.37
+pandas>=2.2.0

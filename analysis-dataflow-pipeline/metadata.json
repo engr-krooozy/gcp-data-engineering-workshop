@@ -1,23 +1,17 @@
 {
-    "name": "Market News Analysis",
-    "description": "A Dataflow pipeline that analyzes financial news with Vertex AI.",
+    "name": "Real-Time Stock Analysis",
+    "description": "A Dataflow pipeline that performs real-time analysis on stock market data.",
     "parameters": [
         {
             "name": "input_subscription",
             "label": "Input Pub/Sub subscription",
-            "helpText": "The Pub/Sub subscription to read messages from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>",
+            "helpText": "The Pub/Sub subscription to read stock data from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>",
             "paramType": "TEXT"
         },
         {
             "name": "output_table",
             "label": "Output BigQuery table",
-            "helpText": "The BigQuery table to write results to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>",
-            "paramType": "TEXT"
-        },
-        {
-            "name": "sentiment_images_bucket_name",
-            "label": "Sentiment images bucket name",
-            "helpText": "The GCS bucket to store generated sentiment chart icons in.",
+            "helpText": "The BigQuery table to write analysis results to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>",
             "paramType": "TEXT"
         }
     ]
