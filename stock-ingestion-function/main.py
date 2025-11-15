@@ -31,7 +31,7 @@ def fetch_and_publish_stock_data(cloud_event):
 
     try:
         logging.info(f"Fetching latest market data for: {', '.join(TICKERS)}")
-        data = yf.download(tickers=TICKERS, period="1m", interval="1m")
+        data = yf.download(tickers=TICKERS, period="1d", interval="1m")
 
         if data.empty:
             logging.warning("No data returned from yfinance.")
