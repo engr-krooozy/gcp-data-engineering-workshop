@@ -93,7 +93,7 @@ def run():
                known_args.output_table,
                schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-               create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER
+               create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
            )
         )
 
