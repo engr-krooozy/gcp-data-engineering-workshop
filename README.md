@@ -318,10 +318,15 @@ def run():
                   | 'Format SMA' >> beam.Map(lambda kv: (kv[0], {'sma_5m': kv[1]})))
 
         # Join all metrics
+        def merge_metrics(kv):
+            # This function safely merges the two streams, ignoring windows where one stream is empty
+            if kv[1]['agg_1m'] and kv[1]['sma_5m']:
+                yield (kv[0], {**kv[1]['agg_1m'][0], **kv[1]['sma_5m'][0]})
+
         joined_data = (
             {'agg_1m': agg_1m, 'sma_5m': sma_5m}
             | 'Join Metrics' >> beam.CoGroupByKey()
-            | 'Merge Metrics' >> beam.Map(lambda kv: (kv[0], {**kv[1]['agg_1m'][0], **kv[1]['sma_5m'][0]})))
+            | 'Merge Metrics' >> beam.FlatMap(merge_metrics))
 
         # Detect anomalies
         anomaly_data = (joined_data | 'Detect Volume Spikes' >> beam.ParDo(DetectVolumeSpike()))
