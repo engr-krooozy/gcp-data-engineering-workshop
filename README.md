@@ -250,6 +250,7 @@ from datetime import datetime
 from apache_beam.transforms.window import FixedWindows, SlidingWindows, TimestampedValue
 from apache_beam.transforms.combiners import Mean
 from apache_beam.transforms.userstate import BagStateSpec
+from apache_beam.coders import VarIntCoder
 
 # --- Custom Pipeline Options ---
 class StockAnalysisPipelineOptions(PipelineOptions):
@@ -260,7 +261,7 @@ class StockAnalysisPipelineOptions(PipelineOptions):
 
 # --- Stateful DoFn for Anomaly Detection ---
 class DetectVolumeSpike(beam.DoFn):
-    VOLUME_HISTORY = BagStateSpec('volume_history')
+    VOLUME_HISTORY = BagStateSpec('volume_history', VarIntCoder())
 
     def process(self, element, volume_history=beam.DoFn.StateParam(VOLUME_HISTORY)):
         ticker, data = element
