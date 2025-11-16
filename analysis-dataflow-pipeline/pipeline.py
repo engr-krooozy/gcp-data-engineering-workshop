@@ -70,7 +70,7 @@ def run():
         sma_5m = (keyed_by_ticker
                   | 'Map to Price' >> beam.Map(lambda kv: (kv[0], kv[1]['price']))
                   | '5-Min Sliding Window' >> beam.WindowInto(SlidingWindows(300, 60))
-                  | 'Calculate 5-Min SMA' >> beam.CombinePerKey(Mean.Globally())
+                  | 'Calculate 5-Min SMA' >> Mean.PerKey()
                   | 'Format SMA' >> beam.Map(lambda kv: (kv[0], {'sma_5m': kv[1]})))
 
         # Join all metrics
