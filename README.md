@@ -190,35 +190,53 @@ def fetch_and_publish_stock_data(cloud_event):
 
     try:
         logging.info(f"Fetching latest market data for: {', '.join(TICKERS)}")
+        # Fetch the last day of data at a 1-minute interval
         data = yf.download(tickers=TICKERS, period="1d", interval="1m")
 
         if data.empty:
-            logging.warning("No data returned from yfinance.")
+            logging.warning("No data returned from yfinance for any tickers.")
             return "OK - No data", 200
 
         publisher = pubsub_v1.PublisherClient()
         topic_path = publisher.topic_path(gcp_project_id, data_topic)
 
         published_count = 0
-        for ticker in TICKERS:
-            # yfinance returns a multi-level column index; we need to handle it carefully
-            if ('Close', ticker) in data.columns and not data['Close'][ticker].empty:
-                price = data['Close'][ticker].iloc[-1]
-                volume = data['Volume'][ticker].iloc[-1]
 
-                message_data = {
-                    "ticker": ticker,
-                    "price": price,
-                    "volume": int(volume),
-                    "timestamp": datetime.now().isoformat()
-                }
+        # When fetching multiple tickers, yfinance uses a multi-level column index
+        # If only one ticker is fetched, it's a single-level index. We must handle both cases.
+        if isinstance(data.columns, pd.MultiIndex):
+            for ticker in TICKERS:
+                try:
+                    ticker_data = data.xs(ticker, level=1, axis=1)
+                    if ticker_data.empty or ticker_data['Close'].isnull().all():
+                        logging.warning(f"No new data for ticker: {ticker}")
+                        continue
+                    last_valid_row = ticker_data.dropna().iloc[-1]
+                    price = last_valid_row['Close']
+                    volume = last_valid_row['Volume']
 
+                    message_data = { "ticker": ticker, "price": price, "volume": int(volume), "timestamp": datetime.now().isoformat() }
+                    message_bytes = json.dumps(message_data).encode("utf-8")
+                    future = publisher.publish(topic_path, message_bytes)
+                    future.result()
+                    published_count += 1
+                except (KeyError, IndexError) as e:
+                    logging.warning(f"Could not process data for ticker '{ticker}'. It might be delisted or have no recent data. Error: {e}")
+                    continue
+        else: # Handle the single-ticker case
+            if not data.empty and not data['Close'].isnull().all():
+                last_valid_row = data.dropna().iloc[-1]
+                price = last_valid_row['Close']
+                volume = last_valid_row['Volume']
+                ticker = TICKERS[0]
+
+                message_data = { "ticker": ticker, "price": price, "volume": int(volume), "timestamp": datetime.now().isoformat() }
                 message_bytes = json.dumps(message_data).encode("utf-8")
                 future = publisher.publish(topic_path, message_bytes)
                 future.result()
                 published_count += 1
 
-        logging.info(f"Published {published_count} stock data messages.")
+        logging.info(f"Successfully published {published_count} stock data messages.")
         return "OK", 200
 
     except Exception as e:
