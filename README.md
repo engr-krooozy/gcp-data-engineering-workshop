@@ -82,6 +82,30 @@ gcloud services enable \
 echo "APIs enabled successfully."
 ```
 
+### 1.4. Grant Permissions to the Dataflow Service Account
+
+By default, Dataflow jobs use your project's Compute Engine service account to run. To allow this service account to read from Pub/Sub and write to BigQuery, we need to grant it the necessary IAM roles.
+
+```bash
+# Get your project number
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+# Identify the default Compute Engine service account
+export GCE_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+# Grant the Pub/Sub Subscriber role
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${GCE_SERVICE_ACCOUNT}" \
+    --role="roles/pubsub.subscriber"
+
+# Grant the BigQuery Data Editor role
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${GCE_SERVICE_ACCOUNT}" \
+    --role="roles/bigquery.dataEditor"
+
+echo "IAM roles granted to Dataflow's service account."
+```
+
 ---
 
 ## Section 2: Create Your Cloud Resources (Approx. 10 mins)
