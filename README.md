@@ -1,8 +1,8 @@
-# The Fintech News Analysis Pipeline: From Live RSS to AI-Powered Insights
+# Building a Serverless Streaming Pipeline on Google Cloud for Live Data Analysis
 
 ## Welcome to the Workshop!
 
-Welcome! In this hands-on workshop, you'll build a sophisticated, real-time data engineering pipeline on Google Cloud. This project is designed for a **fintech** use case, where raw financial news is automatically ingested, analyzed by AI, and transformed into structured, actionable intelligence.
+Welcome! In this hands-on workshop, you'll build a high-throughput, real-time data engineering pipeline on Google Cloud. This project is designed for a **fintech** use case, where live stock market data is ingested, processed using advanced analytics, and stored in a data warehouse for real-time dashboarding.
 
 This workshop is designed to be completed in approximately **1 hour**.
 
@@ -13,29 +13,29 @@ This workshop is designed to be completed in approximately **1 hour**.
 *   How to set up a Google Cloud environment using Cloud Shell.
 *   How to build a modern, event-driven data pipeline from scratch.
 *   How to use **Cloud Scheduler** to trigger a pipeline on a recurring schedule.
-*   How to write a Python **Cloud Function** to ingest and parse a live, public **RSS feed**.
-*   How to use **Pub/Sub** to decouple ingestion from processing.
-*   How to build and deploy a streaming **Dataflow** pipeline for scalable data transformation.
-*   How to use **Vertex AI (Gemini)** for advanced NLP tasks like summarization and sentiment analysis.
-*   How to use **Vertex AI (Imagen)** to generate visual representations of data.
+*   How to write a Python **Cloud Function** to ingest live financial data using an external API.
+*   How to use **Pub/Sub** as a scalable, durable message bus.
+*   How to build and deploy a streaming **Dataflow** pipeline that uses advanced features like **windowing** and **stateful processing**.
+*   How to calculate real-time **technical indicators** (e.g., Simple Moving Average).
+*   How to perform **anomaly detection** on a live data stream.
 *   How to store and query the final structured results in **BigQuery**.
 
 ### Our Fintech Architecture
 
-We will build a real-time news analysis pipeline using a scheduled, event-driven architecture.
+We will build a real-time stock analysis pipeline using a scheduled, event-driven architecture.
 
 ![Architecture Diagram](https://storage.googleapis.com/gweb-cloudblog-publish/images/Event-driven_data_processing_rev2.max-2600x2600.png)
 
 The workflow is:
-1.  **Schedule:** A **Cloud Scheduler** job runs every 15 minutes, sending a trigger message to a Pub/Sub topic.
-2.  **Ingest:** A **Cloud Function**, subscribed to the trigger topic, activates. It fetches the latest articles from the Investing.com "Stock Market News" RSS feed.
-3.  **Publish:** The function parses the XML from the RSS feed and publishes each news article as a distinct message to a second Pub/Sub topic.
-4.  **Process:** A streaming **Dataflow** pipeline, subscribed to the article topic, processes each article in parallel.
-5.  **Analyze & Visualize:** For each article, the Dataflow pipeline uses **Vertex AI** to:
-    *   **Summarize** the article text with the Gemini model.
-    *   **Determine the market sentiment** (Positive, Negative, or Neutral) with Gemini.
-    *   **Generate a sentiment chart icon** with the Imagen model (e.g., a green up-arrow for Positive).
-6.  **Store:** The final, enriched data—including the summary, sentiment, and image URL—is stored in a **BigQuery** table for analysis.
+1.  **Schedule:** A **Cloud Scheduler** job runs every minute, sending a trigger message to a Pub/Sub topic.
+2.  **Ingest:** A **Cloud Function**, subscribed to the trigger topic, activates. It fetches the latest stock prices for major tech companies from the Yahoo Finance API.
+3.  **Publish:** The function publishes the data for each stock as a distinct message to a second Pub/Sub topic.
+4.  **Process & Analyze:** A streaming **Dataflow** pipeline, subscribed to the data topic, performs a series of real-time analyses:
+    *   **1-Minute Aggregations:** It calculates the highest price, **total traded value**, and total trading volume within 1-minute fixed windows.
+    *   **5-Minute Moving Average:** It calculates the 5-minute Simple Moving Average (SMA) of the price using a 5-minute sliding window.
+    *   **Volume Spike Detection:** It uses stateful processing to detect anomalous spikes in trading volume by comparing the current minute's volume to the 10-minute historical average.
+    *   **System Latency:** It tracks the end-to-end latency of the pipeline to measure performance.
+5.  **Store:** The final, enriched data—including the latest price, technical indicators, and anomaly flags—is streamed into a **BigQuery** table for analysis.
 
 ---
 
@@ -74,8 +74,6 @@ gcloud services enable \
   cloudfunctions.googleapis.com \
   cloudbuild.googleapis.com \
   logging.googleapis.com \
-  aiplatform.googleapis.com \
-  iam.googleapis.com \
   pubsub.googleapis.com \
   dataflow.googleapis.com \
   cloudscheduler.googleapis.com
@@ -83,51 +81,66 @@ gcloud services enable \
 echo "APIs enabled successfully."
 ```
 
+### 1.4. Grant Permissions to the Dataflow Service Account
+
+By default, Dataflow jobs use your project's Compute Engine service account to run. To allow this service account to read from Pub/Sub and write to BigQuery, we need to grant it the necessary IAM roles.
+
+```bash
+# Get your project number
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+# Identify the default Compute Engine service account
+export GCE_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+# Grant the Pub/Sub Subscriber role
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${GCE_SERVICE_ACCOUNT}" \
+    --role="roles/pubsub.subscriber"
+
+# Grant the BigQuery Data Editor role
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${GCE_SERVICE_ACCOUNT}" \
+    --role="roles/bigquery.dataEditor"
+
+echo "IAM roles granted to Dataflow's service account."
+```
+
 ---
 
 ## Section 2: Create Your Cloud Resources (Approx. 10 mins)
 
-### 2.1. Create Cloud Storage Buckets
+### 2.1. Create a Cloud Storage Staging Bucket
 
 ```bash
 export STAGING_BUCKET_NAME="fintech-workshop-staging-${PROJECT_ID}"
-export SENTIMENT_IMAGES_BUCKET_NAME="fintech-workshop-images-${PROJECT_ID}"
-
 gsutil mb -p $PROJECT_ID -l $REGION gs://$STAGING_BUCKET_NAME
-gsutil mb -p $PROJECT_ID -l $REGION gs://$SENTIMENT_IMAGES_BUCKET_NAME
-
-# Make the image bucket public
-gsutil iam ch allUsers:objectViewer gs://$SENTIMENT_IMAGES_BUCKET_NAME
-
-echo "Created 2 GCS Buckets."
+echo "Created GCS Staging Bucket."
 ```
 
 ### 2.2. Create a BigQuery Dataset and Table
 
 ```bash
-export BQ_DATASET="market_news_dataset"
-export BQ_TABLE="article_analysis"
+export BQ_DATASET="stock_market_dataset"
+export BQ_TABLE="realtime_analysis"
 
 bq --location=$REGION mk --dataset ${PROJECT_ID}:${BQ_DATASET}
 
 bq mk --table ${PROJECT_ID}:${BQ_DATASET}.${BQ_TABLE} \
-    article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP
+    ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT
 
 echo "Created BigQuery Dataset and Table."
 ```
 
 ### 2.3. Create Pub/Sub Topics and Subscription
 
-We need two topics and one subscription for the Dataflow pipeline.
-
 ```bash
-export TRIGGER_TOPIC="rss-ingestion-trigger"
-export ARTICLES_TOPIC="articles-for-analysis"
-export ARTICLES_SUB="articles-for-analysis-sub"
+export TRIGGER_TOPIC="stock-ingestion-trigger"
+export DATA_TOPIC="stock-data-for-analysis"
+export DATA_SUB="stock-data-for-analysis-sub"
 
 gcloud pubsub topics create $TRIGGER_TOPIC
-gcloud pubsub topics create $ARTICLES_TOPIC
-gcloud pubsub subscriptions create $ARTICLES_SUB --topic=$ARTICLES_TOPIC
+gcloud pubsub topics create $DATA_TOPIC
+gcloud pubsub subscriptions create $DATA_SUB --topic=$DATA_TOPIC
 
 echo "Created 2 Pub/Sub Topics and 1 Subscription."
 ```
@@ -139,110 +152,170 @@ echo "Created 2 Pub/Sub Topics and 1 Subscription."
 ### 3.1. Create the Function's Source Code
 
 ```bash
-mkdir -p rss-ingestion-function
+mkdir -p stock-ingestion-function
 
 # Create main.py
-cat > rss-ingestion-function/main.py << EOF
+cat > stock-ingestion-function/main.py << EOF
 import functions_framework
 from google.cloud import pubsub_v1
-import feedparser
+import yfinance as yf
 import json
 import os
-import hashlib
 import logging
+from datetime import datetime
+import pandas as pd
+import time
 
-# Configure basic logging to view output in Cloud Logging
+# Configure basic logging
 logging.basicConfig(level=logging.INFO)
 
+# Tickers for major tech companies
+TICKERS = ["GOOGL", "AAPL", "MSFT", "AMZN", "NVDA", "META"]
+
 @functions_framework.cloud_event
-def fetch_and_publish_rss(cloud_event):
+def fetch_and_publish_stock_data(cloud_event):
     """
-    Triggered by a Pub/Sub message to fetch an RSS feed and publish each article
-    to another Pub/Sub topic.
+    Fetches historical stock data from Yahoo Finance and replays it as if it were live.
+    It selects the most recent full trading day and loops through it minute-by-minute
+    based on the current time.
     """
-    logging.info("Cloud Function 'fetch_and_publish_rss' invoked.")
+    logging.info("Function 'fetch_and_publish_stock_data' invoked.")
 
-    # --- 1. Configuration and Validation ---
     gcp_project_id = os.environ.get("GCP_PROJECT_ID")
-    articles_topic = os.environ.get("ARTICLES_TOPIC")
-    rss_feed_url = "https://www.investing.com/rss/news_25.rss"
+    data_topic = os.environ.get("DATA_TOPIC")
 
-    if not gcp_project_id or not articles_topic:
-        logging.error("FATAL: Missing required environment variables: GCP_PROJECT_ID or ARTICLES_TOPIC.")
+    if not gcp_project_id or not data_topic:
+        logging.error("FATAL: Missing GCP_PROJECT_ID or DATA_TOPIC env variables.")
         return "Configuration Error", 500
 
-    logging.info(f"Project ID: {gcp_project_id}, Articles Topic: {articles_topic}")
+    logging.info(f"Project ID: {gcp_project_id}, Target Topic: {data_topic}")
 
     try:
-        # --- 2. Fetch RSS Feed ---
-        logging.info(f"Fetching RSS feed from: {rss_feed_url}")
-        feed = feedparser.parse(rss_feed_url)
+        logging.info(f"Fetching historical market data for: {', '.join(TICKERS)}")
+        # Fetch 5 days of data to ensure we capture at least one full trading day
+        data = yf.download(tickers=TICKERS, period="5d", interval="1m")
 
-        if not feed.entries:
-            logging.warning("No new articles found in the RSS feed.")
-            return "OK - No new articles", 200
+        if data.empty:
+            logging.warning("No data returned from yfinance for any tickers.")
+            return "OK - No data", 200
 
-        logging.info(f"Found {len(feed.entries)} articles in the RSS feed.")
-
-        # --- 3. Publish to Pub/Sub ---
         publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(gcp_project_id, articles_topic)
+        topic_path = publisher.topic_path(gcp_project_id, data_topic)
 
         published_count = 0
-        for entry in feed.entries:
-            try:
-                article_id = hashlib.md5(entry.link.encode()).hexdigest()
 
-                # Safely get article content, falling back from 'summary' to 'description'
-                full_text = entry.get('summary', entry.get('description', ''))
+        # Determine the most recent full trading day
+        # We look at the index (DatetimeIndex) to find unique dates
+        unique_dates = sorted(list(set(data.index.date)))
+        
+        if not unique_dates:
+             logging.warning("No dates found in data.")
+             return "OK - No data", 200
+             
+        # Pick the last available date (likely the most recent full trading day)
+        target_date = unique_dates[-1]
+        logging.info(f"Replaying data from: {target_date}")
 
-                message_data = {
-                    "article_id": article_id,
-                    "headline": entry.title,
-                    "full_text": full_text,
-                    "link": entry.link
-                }
+        # Filter data for that specific date
+        # Note: yfinance returns a DatetimeIndex which is timezone-aware.
+        # We need to handle the slicing carefully.
+        # Converting to string for robust slicing usually works well with pandas.
+        target_date_str = str(target_date)
+        day_data = data.loc[target_date_str]
 
-                message_bytes = json.dumps(message_data).encode("utf-8")
-                future = publisher.publish(topic_path, message_bytes)
-                future.result()  # Wait for the publish to complete
-                published_count += 1
-                logging.info(f"Successfully published article ID: {article_id}")
+        if day_data.empty:
+             logging.warning(f"No data found for target date {target_date_str}")
+             return "OK - No data", 200
 
-            except Exception as e:
-                logging.error(f"Failed to process or publish article: {entry.get('title', 'N/A')}. Error: {e}", exc_info=True)
+        # Calculate the replay index based on the current time
+        # We want to loop through the day's minutes.
+        # Total minutes in a trading day (9:30 - 16:00) is 390.
+        # But yfinance might return pre/post market data too, or fewer rows.
+        # We'll just take the total number of rows available for that day and modulo.
+        total_rows = len(day_data)
+        current_timestamp = int(time.time())
+        # Change the index every minute (60 seconds)
+        replay_index = (current_timestamp // 60) % total_rows
+        
+        logging.info(f"Replay Index: {replay_index} / {total_rows}")
 
-        logging.info(f"Function complete. Successfully published {published_count} of {len(feed.entries)} articles.")
+        # Extract the specific row for this minute
+        current_row = day_data.iloc[replay_index]
+
+        # Handle MultiIndex vs Single Index
+        if isinstance(data.columns, pd.MultiIndex):
+            for ticker in TICKERS:
+                try:
+                    # Access the data for this ticker from the current row
+                    # The row is a Series with a MultiIndex if we selected a single row from a MultiIndex DataFrame
+                    # Structure: (Price, Ticker)
+                    
+                    # We need to extract Close and Volume for this specific ticker
+                    # current_row is a Series. Index is MultiIndex (Price, Ticker) or (Ticker, Price) depending on yfinance version?
+                    # Actually, day_data is a DataFrame. current_row is a Series corresponding to one timestamp.
+                    # The index of current_row is the columns of the DataFrame.
+                    
+                    price = current_row.get(('Close', ticker))
+                    volume = current_row.get(('Volume', ticker))
+
+                    if pd.isna(price) or pd.isna(volume):
+                        logging.debug(f"NaN data for {ticker} at index {replay_index}")
+                        continue
+
+                    message_data = { "ticker": ticker, "price": float(price), "volume": int(volume), "timestamp": datetime.now().isoformat() }
+                    message_bytes = json.dumps(message_data).encode("utf-8")
+                    future = publisher.publish(topic_path, message_bytes)
+                    future.result()
+                    published_count += 1
+                except Exception as e:
+                    logging.warning(f"Could not process data for ticker '{ticker}'. Error: {e}")
+                    continue
+        else: # Handle the single-ticker case
+            if not day_data.empty:
+                # For single ticker, columns are just ['Open', 'High', 'Low', 'Close', 'Volume', ...]
+                price = current_row['Close']
+                volume = current_row['Volume']
+                ticker = TICKERS[0]
+                
+                if not pd.isna(price) and not pd.isna(volume):
+                    message_data = { "ticker": ticker, "price": float(price), "volume": int(volume), "timestamp": datetime.now().isoformat() }
+                    message_bytes = json.dumps(message_data).encode("utf-8")
+                    future = publisher.publish(topic_path, message_bytes)
+                    future.result()
+                    published_count += 1
+
+        logging.info(f"Successfully published {published_count} stock data messages (Replay Mode).")
         return "OK", 200
 
     except Exception as e:
-        logging.error(f"An unexpected error occurred in the function: {e}", exc_info=True)
+        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
         return "Internal Server Error", 500
 EOF
 
 # Create requirements.txt
-cat > rss-ingestion-function/requirements.txt << EOF
+cat > stock-ingestion-function/requirements.txt << EOF
 functions-framework>=3.0.0
 google-cloud-pubsub>=2.13.0
-feedparser>=6.0.0
+yfinance>=0.2.37
+pandas>=2.2.0
 EOF
 ```
 
 ### 3.2. Deploy the Cloud Function
 
 ```bash
-cd rss-ingestion-function
+cd stock-ingestion-function
 
-gcloud functions deploy fetch-and-publish-rss \
+gcloud functions deploy fetch-and-publish-stock-data \
   --gen2 \
   --runtime=python311 \
   --region=$REGION \
   --source=. \
-  --entry-point=fetch_and_publish_rss \
+  --entry-point=fetch_and_publish_stock_data \
   --trigger-topic=$TRIGGER_TOPIC \
-  --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,ARTICLES_TOPIC=$ARTICLES_TOPIC \
-  --memory=2Gi \
-  --timeout=3600s
+  --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,DATA_TOPIC=$DATA_TOPIC \
+  --memory=512Mi \
+  --timeout=120s
 
 cd ..
 echo "Cloud Function deployment initiated."
@@ -264,101 +337,125 @@ from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOpt
 import logging
 import json
 from datetime import datetime
-import io
-
-from google.cloud import storage
-import vertexai
-from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
-from vertexai.preview.vision_models import ImageGenerationModel
+from apache_beam.transforms.window import FixedWindows, SlidingWindows, TimestampedValue
+from apache_beam.transforms.combiners import Mean
+from apache_beam.transforms.userstate import BagStateSpec
+from apache_beam.coders import VarIntCoder
 
 # --- Custom Pipeline Options ---
-class MarketNewsPipelineOptions(PipelineOptions):
-    """Custom options for the Market News Analysis pipeline."""
+class StockAnalysisPipelineOptions(PipelineOptions):
     @classmethod
     def _add_argparse_args(cls, parser):
-        parser.add_argument('--input_subscription', required=True, help='Pub/Sub subscription to read from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>')
-        parser.add_argument('--output_table', required=True, help='BigQuery table to write to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>')
-        parser.add_argument('--sentiment_images_bucket_name', required=True, help='GCS bucket to store generated sentiment chart icons.')
+        parser.add_argument('--input_subscription', required=True)
+        parser.add_argument('--output_table', required=True)
 
-# This DoFn class encapsulates the logic to call the Vertex AI APIs
-class AnalyzeArticle(beam.DoFn):
-    def __init__(self, project_id, region, sentiment_images_bucket_name):
-        self.project_id = project_id
-        self.region = region
-        self.sentiment_images_bucket_name = sentiment_images_bucket_name
+# --- Stateful DoFn for Anomaly Detection ---
+class DetectVolumeSpike(beam.DoFn):
+    VOLUME_HISTORY = BagStateSpec('volume_history', VarIntCoder())
 
-    def setup(self):
-        # Initialize the Vertex AI clients. This is done once per worker.
-        vertexai.init(project=self.project_id, location=self.region)
-        self.text_model = GenerativeModel("gemini-2.5-pro", safety_settings={
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        })
-        self.image_model = ImageGenerationModel.from_pretrained("imagegeneration@006")
-        self.storage_client = storage.Client()
+    def process(self, element, volume_history=beam.DoFn.StateParam(VOLUME_HISTORY)):
+        ticker, data = element
+        current_volume = data.get('total_volume_1m', 0)
 
-    def process(self, element):
-        try:
-            # --- 1. Summarization ---
-            summary_prompt = f"You are a financial analyst. Summarize the key points of this article for a busy trader in three bullet points: '{element['full_text']}'"
-            summary_response = self.text_model.generate_content(summary_prompt)
-            summary = summary_response.text.strip() if hasattr(summary_response, 'text') else "Error: Could not generate summary."
+        # Read the list of historical volumes
+        historical_volumes = list(volume_history.read())
 
-            # --- 2. Sentiment Analysis ---
-            sentiment_prompt = f"Based on the following headline and summary, what is the market sentiment? Respond with only one word: Positive, Negative, or Neutral. Headline: '{element['headline']}' Summary: '{summary}'"
-            sentiment_response = self.text_model.generate_content(sentiment_prompt)
-            sentiment = sentiment_response.text.strip() if hasattr(sentiment_response, 'text') else "Neutral"
-            # Basic validation to ensure the sentiment is one of the three expected values
-            if sentiment not in ["Positive", "Negative", "Neutral"]:
-                sentiment = "Neutral"
+        # Calculate the average of the historical volumes
+        avg_volume_10m = sum(historical_volumes) / len(historical_volumes) if historical_volumes else 0
 
-            # --- 3. Image Generation ---
-            image_prompt = f"Create a simple, abstract stock market chart icon that visually represents a '{sentiment}' trend."
-            images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
+        # Determine if the current volume is a spike
+        is_spike = current_volume > (avg_volume_10m * 2) and avg_volume_10m > 0
 
-            image_bytes = images[0]._image_bytes
-            image_blob_name = f"{element['article_id']}_{sentiment.lower()}.png"
+        # Add the current volume to the history and keep the list at a max of 10 items
+        historical_volumes.append(current_volume)
+        volume_history.clear()
+        for vol in historical_volumes[-10:]:
+            volume_history.add(vol)
 
-            image_bucket = self.storage_client.bucket(self.sentiment_images_bucket_name)
-            image_blob = image_bucket.blob(image_blob_name)
-            image_blob.upload_from_file(io.BytesIO(image_bytes), content_type="image/png")
-            sentiment_chart_url = image_blob.public_url
+        yield (ticker, {**data, 'is_volume_spike': is_spike})
 
-            # Yield the final, enriched record
-            yield {
-                "article_id": element['article_id'],
-                "headline": element['headline'],
-                "summary": summary,
-                "sentiment": sentiment,
-                "sentiment_chart_url": sentiment_chart_url,
-                "processed_at": datetime.utcnow().isoformat()
-            }
-        except Exception as e:
-            logging.error(f"Failed to process article {element['article_id']}: {e}", exc_info=True)
-            # Optionally, you could output to a dead-letter queue here
-            pass
+# --- DoFn for Formatting Output ---
+class FormatOutput(beam.DoFn):
+    def process(self, element, window=beam.DoFn.WindowParam):
+        ticker, data = element
+        
+        # Calculate System Latency
+        # Window end time is when the window closes. Processing time is now.
+        window_end_time = window.end.to_utc_datetime()
+        processing_time = datetime.utcnow()
+        system_latency = (processing_time - window_end_time).total_seconds()
+
+        output_row = {
+            'ticker': ticker,
+            'window_timestamp': window_end_time.isoformat(),
+            'latest_price': data['latest_price'],
+            'high_price_1m': data['high_price_1m'],
+            'total_volume_1m': data['total_volume_1m'],
+            'total_value_1m': data['total_value_1m'], # New Metric
+            'sma_5m': data['sma_5m'],
+            'is_volume_spike': data.get('is_volume_spike', False),
+            'system_latency': system_latency # New Metric
+        }
+        yield output_row
 
 def run():
-    """Defines and runs the Dataflow pipeline."""
     pipeline_options = PipelineOptions(streaming=True)
-    custom_options = pipeline_options.view_as(MarketNewsPipelineOptions)
+    custom_options = pipeline_options.view_as(StockAnalysisPipelineOptions)
     gcp_options = pipeline_options.view_as(GoogleCloudOptions)
-
-    # This is necessary for Dataflow to pickle the main session
     pipeline_options.view_as(SetupOptions).save_main_session = True
 
     with beam.Pipeline(options=pipeline_options) as p:
-        (p
-         | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=custom_options.input_subscription)
-         | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
-         | 'Analyze Article' >> beam.ParDo(AnalyzeArticle(
-             project_id=gcp_options.project,
-             region=gcp_options.region,
-             sentiment_images_bucket_name=custom_options.sentiment_images_bucket_name
-           ))
+        events = (p
+                  | 'Read from Pub/Sub' >> beam.io.ReadFromPubSub(subscription=custom_options.input_subscription)
+                  | 'Decode JSON' >> beam.Map(lambda x: json.loads(x.decode('utf-8'))))
+
+        timestamped_events = (events
+                              | 'Add Timestamps' >> beam.Map(lambda e: TimestampedValue(e, datetime.fromisoformat(e['timestamp']).timestamp())))
+
+        keyed_by_ticker = (timestamped_events | 'Key by Ticker' >> beam.Map(lambda e: (e['ticker'], e)))
+
+        # 1-minute aggregations
+        agg_1m = (keyed_by_ticker
+                  | '1-Min Window' >> beam.WindowInto(FixedWindows(60))
+                  | 'Group by Ticker' >> beam.GroupByKey()
+                  | 'Calculate 1-Min Aggs' >> beam.Map(lambda kv: (kv[0], {
+                      'latest_price': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp())['price'],
+                      'high_price_1m': max(item['price'] for item in kv[1]),
+                      'total_volume_1m': sum(item['volume'] for item in kv[1]),
+                      'total_value_1m': sum(item['price'] * item['volume'] for item in kv[1]) # New Metric
+                  })))
+
+        # 5-minute SMA
+        # Note: We re-window into FixedWindows(60) before joining to ensure alignment with agg_1m.
+        # The SlidingWindow value emitted is the one valid for that window.
+        sma_5m = (keyed_by_ticker
+                  | 'Map to Price' >> beam.Map(lambda kv: (kv[0], kv[1]['price']))
+                  | '5-Min Sliding Window' >> beam.WindowInto(SlidingWindows(300, 60))
+                  | 'Calculate 5-Min SMA' >> Mean.PerKey()
+                  | 'Format SMA' >> beam.Map(lambda kv: (kv[0], {'sma_5m': kv[1]}))
+                  | 'Re-Window SMA' >> beam.WindowInto(FixedWindows(60)))
+
+        # Join all metrics
+        def merge_metrics(kv):
+            # This function safely merges the two streams
+            if kv[1]['agg_1m'] and kv[1]['sma_5m']:
+                # Take the first element from each (should be only one per window per key)
+                yield (kv[0], {**kv[1]['agg_1m'][0], **kv[1]['sma_5m'][0]})
+
+        joined_data = (
+            {'agg_1m': agg_1m, 'sma_5m': sma_5m}
+            | 'Join Metrics' >> beam.CoGroupByKey()
+            | 'Merge Metrics' >> beam.FlatMap(merge_metrics))
+
+        # Detect anomalies
+        anomaly_data = (joined_data | 'Detect Volume Spikes' >> beam.ParDo(DetectVolumeSpike()))
+
+        # Format and write to BigQuery
+        (anomaly_data
+         | 'Format for BigQuery' >> beam.ParDo(FormatOutput())
          | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
              custom_options.output_table,
-             schema='article_id:STRING,headline:STRING,summary:STRING,sentiment:STRING,sentiment_chart_url:STRING,processed_at:TIMESTAMP',
+             schema='ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT',
              write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
              create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
            )
@@ -372,32 +469,25 @@ EOF
 # Create requirements.txt
 cat > analysis-dataflow-pipeline/requirements.txt << EOF
 apache-beam[gcp]>=2.40.0
-google-cloud-aiplatform[generative_models]>=1.38.0
 google-cloud-storage>=2.0.0
 EOF
 
 # Create metadata.json for the Flex Template
 cat > analysis-dataflow-pipeline/metadata.json << EOF
 {
-    "name": "Market News Analysis",
-    "description": "A Dataflow pipeline that analyzes financial news with Vertex AI.",
+    "name": "Real-Time Stock Analysis",
+    "description": "A Dataflow pipeline that performs real-time analysis on stock market data.",
     "parameters": [
         {
             "name": "input_subscription",
             "label": "Input Pub/Sub subscription",
-            "helpText": "The Pub/Sub subscription to read messages from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>",
+            "helpText": "The Pub/Sub subscription to read stock data from. Format: projects/<PROJECT_ID>/subscriptions/<SUBSCRIPTION_ID>",
             "paramType": "TEXT"
         },
         {
             "name": "output_table",
             "label": "Output BigQuery table",
-            "helpText": "The BigQuery table to write results to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>",
-            "paramType": "TEXT"
-        },
-        {
-            "name": "sentiment_images_bucket_name",
-            "label": "Sentiment images bucket name",
-            "helpText": "The GCS bucket to store generated sentiment chart icons in.",
+            "helpText": "The BigQuery table to write analysis results to. Format: <PROJECT_ID>:<DATASET_ID>.<TABLE_ID>",
             "paramType": "TEXT"
         }
     ]
@@ -408,18 +498,10 @@ EOF
 cat > analysis-dataflow-pipeline/Dockerfile << EOF
 # Dockerfile for Dataflow Flex Template
 FROM gcr.io/dataflow-templates-base/python3-template-launcher-base
-
-# Set the working directory
 WORKDIR /template
-
-# Copy the requirements file and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the pipeline source code
 COPY pipeline.py .
-
-# Set the entrypoint for the template launcher
 ENV FLEX_TEMPLATE_PYTHON_PY_FILE=/template/pipeline.py
 EOF
 ```
@@ -427,8 +509,8 @@ EOF
 ### 4.2. Deploy the Dataflow Pipeline
 
 ```bash
-export TEMPLATE_IMAGE="gcr.io/${PROJECT_ID}/dataflow/fintech-analysis:latest"
-export TEMPLATE_PATH="gs://${STAGING_BUCKET_NAME}/templates/fintech_analysis_template.json"
+export TEMPLATE_IMAGE="gcr.io/${PROJECT_ID}/dataflow/stock-analysis:latest"
+export TEMPLATE_PATH="gs://${STAGING_BUCKET_NAME}/templates/stock_analysis_template.json"
 
 # Build the Docker image for the Flex Template
 gcloud builds submit --tag $TEMPLATE_IMAGE analysis-dataflow-pipeline
@@ -440,26 +522,25 @@ gcloud dataflow flex-template build $TEMPLATE_PATH \
   --metadata-file analysis-dataflow-pipeline/metadata.json
 
 # Run the Flex Template to start the streaming job
-gcloud dataflow flex-template run "fintech-news-analysis-`date +%Y%m%d-%H%M%S`" \
+gcloud dataflow flex-template run "stock-market-analysis-`date +%Y%m%d-%H%M%S`" \
     --template-file-gcs-location $TEMPLATE_PATH \
     --project $PROJECT_ID \
     --region $REGION \
-    --parameters input_subscription=projects/$PROJECT_ID/subscriptions/$ARTICLES_SUB \
-    --parameters output_table=$PROJECT_ID:$BQ_DATASET.$BQ_TABLE \
-    --parameters sentiment_images_bucket_name=$SENTIMENT_IMAGES_BUCKET_NAME
+    --parameters input_subscription=projects/$PROJECT_ID/subscriptions/$DATA_SUB \
+    --parameters output_table=$PROJECT_ID:$BQ_DATASET.$BQ_TABLE
 ```
 
 ---
 
-## Section 5: Schedule and Verify the Pipeline (Approx. 5 mins)
+## Section 5: Schedule and Verify the Pipeline (Approx. 10 mins)
 
 ### 5.1. Schedule the Ingestion Job
 
-Create the Cloud Scheduler job to run the pipeline automatically every 15 minutes.
+Create a Cloud Scheduler job to run the pipeline automatically every minute.
 
 ```bash
-gcloud scheduler jobs create pubsub trigger-rss-ingestion-job \
-    --schedule "*/15 * * * *" \
+gcloud scheduler jobs create pubsub trigger-stock-ingestion-job \
+    --schedule "* * * * *" \
     --topic $TRIGGER_TOPIC \
     --message-body "Run" \
     --location $REGION
@@ -467,50 +548,159 @@ gcloud scheduler jobs create pubsub trigger-rss-ingestion-job \
 
 ### 5.2. Manually Trigger the Pipeline (Optional)
 
-You can wait for the scheduler, or trigger it manually to see results faster.
-
 ```bash
-gcloud scheduler jobs run trigger-rss-ingestion-job --location $REGION
+gcloud scheduler jobs run trigger-stock-ingestion-job --location $REGION
 ```
 
 ### 5.3. Verify the Results in BigQuery
 
-Wait a few minutes for the data to flow through the pipeline. Then, query your BigQuery table.
+Wait a few minutes for data to flow through the pipeline. Then, query your BigQuery table.
 
 ```bash
-bq query "SELECT headline, summary, sentiment, sentiment_chart_url FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\` ORDER BY processed_at DESC LIMIT 10"
+bq query "SELECT * FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\` ORDER BY window_timestamp DESC LIMIT 10"
 ```
 
-You should see the latest financial news headlines, along with the AI-generated summary, sentiment, and a link to the sentiment chart icon!
+You should see real-time analysis results for each stock, including the latest price, moving average, and volume spike alerts!
 
 ---
 
-## Section 6: Cleanup
+## Section 6: Analyze the Data with SQL
+
+Now that your pipeline is running, let's use BigQuery to uncover insights from the streaming data. Run these queries in the **BigQuery Studio** console.
+
+### 6.1. Real-Time Dashboard View
+Get the latest snapshot of every stock, ranked by the most recent update.
+
+```sql
+SELECT 
+    ticker,
+    latest_price,
+    total_volume_1m,
+    total_value_1m,
+    sma_5m,
+    is_volume_spike,
+    window_timestamp
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY window_timestamp DESC) = 1
+ORDER BY total_value_1m DESC;
+```
+
+### 6.2. Trend Analysis (Buy/Sell Signals)
+Identify stocks where the price is crossing above the 5-minute Moving Average (a potential "Buy" signal).
+
+```sql
+SELECT 
+    ticker,
+    latest_price,
+    sma_5m,
+    (latest_price - sma_5m) as price_diff,
+    window_timestamp
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+WHERE latest_price > sma_5m
+ORDER BY window_timestamp DESC
+LIMIT 10;
+```
+
+### 6.3. Whale Watching 🐳
+Find the specific minutes with the highest traded value across all stocks.
+
+```sql
+SELECT 
+    ticker,
+    total_value_1m,
+    total_volume_1m,
+    latest_price,
+    window_timestamp
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+ORDER BY total_value_1m DESC
+LIMIT 5;
+```
+
+### 6.4. Pipeline Health Check
+Analyze the system latency to see how "real-time" your pipeline truly is.
+
+```sql
+SELECT 
+    AVG(system_latency) as avg_latency_seconds,
+    MAX(system_latency) as max_latency_seconds,
+    MIN(system_latency) as min_latency_seconds,
+    COUNT(*) as total_records
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+WHERE window_timestamp > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR);
+```
+
+### 6.5. Volatility Analysis 📉
+Identify which stocks are most volatile by calculating the standard deviation of their price over the last 10 minutes.
+
+```sql
+SELECT
+    ticker,
+    STDDEV(latest_price) as price_stddev,
+    AVG(latest_price) as avg_price,
+    (STDDEV(latest_price) / AVG(latest_price)) * 100 as volatility_pct
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+WHERE window_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE)
+GROUP BY ticker
+ORDER BY volatility_pct DESC;
+```
+
+### 6.6. Momentum Ranking 🚀
+Rank stocks by their current momentum, defined as the percentage difference between the latest price and the 5-minute SMA.
+
+```sql
+SELECT
+    ticker,
+    latest_price,
+    sma_5m,
+    ((latest_price - sma_5m) / sma_5m) * 100 as momentum_pct,
+    window_timestamp
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY window_timestamp DESC) = 1
+ORDER BY momentum_pct DESC;
+```
+
+### 6.7. Latency Debugging 🐢
+Find specific minutes where the system latency spiked above 30 seconds, helping you debug performance bottlenecks.
+
+```sql
+SELECT
+    window_timestamp,
+    system_latency,
+    ticker,
+    total_volume_1m
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+WHERE system_latency > 30
+ORDER BY system_latency DESC;
+```
+
+---
+
+## Section 7: Cleanup
 
 To avoid ongoing charges, run these commands to delete the resources you created.
 
 ```bash
 # ---- Cleanup Commands ----
 # 1. Stop the Dataflow Job
-export JOB_ID=$(gcloud dataflow jobs list --region=$REGION --filter="name:fintech-news-analysis" --format="get(id)")
+export JOB_ID=$(gcloud dataflow jobs list --region=$REGION --filter="name:stock-market-analysis" --format="get(id)")
 gcloud dataflow jobs drain $JOB_ID --region=$REGION --quiet
 
 # 2. Delete the Cloud Scheduler Job
-gcloud scheduler jobs delete trigger-rss-ingestion-job --location $REGION --quiet
+gcloud scheduler jobs delete trigger-stock-ingestion-job --location $REGION --quiet
 
 # 3. Delete the Cloud Function
-gcloud functions delete fetch-and-publish-rss --region=$REGION --gen2 --quiet
+gcloud functions delete fetch-and-publish-stock-data --region=$REGION --gen2 --quiet
 
-# 4. Delete the GCS Buckets
-gsutil rm -r -f gs://$STAGING_BUCKET_NAME gs://$SENTIMENT_IMAGES_BUCKET_NAME
+# 4. Delete the GCS Bucket
+gsutil rm -r -f gs://$STAGING_BUCKET_NAME
 
 # 5. Delete the BigQuery Dataset
 bq rm -r -f --dataset ${PROJECT_ID}:${BQ_DATASET}
 
 # 6. Delete the Pub/Sub Topics and Subscription
-gcloud pubsub subscriptions delete $ARTICLES_SUB --project=$PROJECT_ID
+gcloud pubsub subscriptions delete $DATA_SUB --project=$PROJECT_ID
 gcloud pubsub topics delete $TRIGGER_TOPIC --project=$PROJECT_ID
-gcloud pubsub topics delete $ARTICLES_TOPIC --project=$PROJECT_ID
+gcloud pubsub topics delete $DATA_TOPIC --project=$PROJECT_ID
 
 echo "Cleanup complete."
 ```
