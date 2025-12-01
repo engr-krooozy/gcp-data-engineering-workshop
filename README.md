@@ -54,6 +54,7 @@ First, let's get your Google Cloud project and Cloud Shell ready.
 
 ```bash
 # 1. Set your Project ID
+#Replace `your-project-id` with your actual project ID on Google Cloud
 gcloud config set project your-project-id
 echo "Project configured."
 
