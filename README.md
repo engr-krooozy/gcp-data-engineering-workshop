@@ -641,7 +641,7 @@ SELECT
     sma_5m,
     is_volume_spike,
     window_timestamp
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY window_timestamp DESC) = 1
 ORDER BY total_value_1m DESC;
 ```
@@ -656,7 +656,7 @@ SELECT
     sma_5m,
     (latest_price - sma_5m) as price_diff,
     window_timestamp
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 WHERE latest_price > sma_5m
 ORDER BY window_timestamp DESC
 LIMIT 10;
@@ -672,7 +672,7 @@ SELECT
     total_volume_1m,
     latest_price,
     window_timestamp
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 ORDER BY total_value_1m DESC
 LIMIT 5;
 ```
@@ -686,7 +686,7 @@ SELECT
     MAX(system_latency) as max_latency_seconds,
     MIN(system_latency) as min_latency_seconds,
     COUNT(*) as total_records
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 WHERE window_timestamp > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR);
 ```
 
@@ -699,7 +699,7 @@ SELECT
     STDDEV(latest_price) as price_stddev,
     AVG(latest_price) as avg_price,
     (STDDEV(latest_price) / AVG(latest_price)) * 100 as volatility_pct
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 WHERE window_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE)
 GROUP BY ticker
 ORDER BY volatility_pct DESC;
@@ -715,7 +715,7 @@ SELECT
     sma_5m,
     ((latest_price - sma_5m) / sma_5m) * 100 as momentum_pct,
     window_timestamp
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY window_timestamp DESC) = 1
 ORDER BY momentum_pct DESC;
 ```
@@ -729,7 +729,7 @@ SELECT
     system_latency,
     ticker,
     total_volume_1m
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 WHERE system_latency > 30
 ORDER BY system_latency DESC;
 ```
@@ -745,7 +745,7 @@ SELECT
     COUNT(*) as data_points,
     -- Check if positive sentiment correlates with higher prices (simplified)
     CORR(ai_sentiment, latest_price) as sentiment_price_correlation
-FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+FROM `stock_market_dataset.realtime_analysis`
 WHERE window_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
 GROUP BY ticker
 ORDER BY avg_sentiment DESC;
