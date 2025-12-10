@@ -60,7 +60,9 @@ class FormatOutput(beam.DoFn):
             'total_value_1m': data['total_value_1m'], # New Metric
             'sma_5m': data['sma_5m'],
             'is_volume_spike': data.get('is_volume_spike', False),
-            'system_latency': system_latency # New Metric
+            'system_latency': system_latency, # New Metric
+            'ai_sentiment': data.get('ai_sentiment', 0.0), # New AI Metric
+            'ai_summary': data.get('ai_summary', 'No summary') # New AI Metric
         }
         yield output_row
 
@@ -88,7 +90,10 @@ def run():
                       'latest_price': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp())['price'],
                       'high_price_1m': max(item['price'] for item in kv[1]),
                       'total_volume_1m': sum(item['volume'] for item in kv[1]),
-                      'total_value_1m': sum(item['price'] * item['volume'] for item in kv[1]) # New Metric
+                      'total_value_1m': sum(item['price'] * item['volume'] for item in kv[1]), # New Metric
+                      # Pass through the AI fields from the latest event in the window
+                      'ai_sentiment': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp()).get('ai_sentiment', 0.0),
+                      'ai_summary': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp()).get('ai_summary', 'No summary')
                   })))
 
         # 5-minute SMA
@@ -121,7 +126,7 @@ def run():
          | 'Format for BigQuery' >> beam.ParDo(FormatOutput())
          | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
              custom_options.output_table,
-             schema='ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT',
+             schema='ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT,ai_sentiment:FLOAT,ai_summary:STRING',
              write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
              create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
            )
