@@ -24,7 +24,8 @@ This workshop is designed to be completed in approximately **1 hour**.
 
 We will build a real-time stock analysis pipeline using a scheduled, event-driven architecture.
 
-![Architecture Diagram](https://storage.googleapis.com/gweb-cloudblog-publish/images/Event-driven_data_processing_rev2.max-2600x2600.png)
+![Architecture Diagram]
+<img width="741" height="723" alt="Architecture Diagram" src="https://github.com/user-attachments/assets/93a3218b-cccf-4a66-bbaa-ee847ccacccb" />
 
 The workflow is:
 1.  **Schedule:** A **Cloud Scheduler** job runs every minute, sending a trigger message to a Pub/Sub topic.
