@@ -1,4 +1,4 @@
-# Building a Serverless Streaming Pipeline on Google Cloud for Live Data Analysis
+# Building an AI-Powered Real-Time Stock Analysis Pipeline on Google Cloud
 
 ## Welcome to the Workshop!
 
@@ -66,7 +66,23 @@ export REGION="us-central1"
 echo "Using Project ID: $PROJECT_ID in Region: $REGION"
 ```
 
-### 1.3. Enable Required Google Cloud APIs
+```
+ 
+ ### 1.3. Configure Your Google AI Studio API Key
+ 
+ To access the Gemini 3.0 model, you need an API key from Google AI Studio.
+ 
+ 1.  Go to [Google AI Studio](https://aistudio.google.com/).
+ 2.  Click on **Get API key**.
+ 3.  Click **Create API key**.
+ 4.  Copy the key and run the following command in Cloud Shell:
+ 
+ ```bash
+ export GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+ echo "Google API Key configured."
+ ```
+ 
+ ### 1.4. Enable Required Google Cloud APIs
 
 ```bash
 gcloud services enable \
@@ -77,12 +93,13 @@ gcloud services enable \
   logging.googleapis.com \
   pubsub.googleapis.com \
   dataflow.googleapis.com \
-  cloudscheduler.googleapis.com
+  cloudscheduler.googleapis.com \
+  aiplatform.googleapis.com
 
 echo "APIs enabled successfully."
 ```
 
-### 1.4. Grant Permissions to the Dataflow Service Account
+### 1.5. Grant Permissions to the Dataflow Service Account
 
 By default, Dataflow jobs use your project's Compute Engine service account to run. To allow this service account to read from Pub/Sub and write to BigQuery, we need to grant it the necessary IAM roles.
 
@@ -127,7 +144,7 @@ export BQ_TABLE="realtime_analysis"
 bq --location=$REGION mk --dataset ${PROJECT_ID}:${BQ_DATASET}
 
 bq mk --table ${PROJECT_ID}:${BQ_DATASET}.${BQ_TABLE} \
-    ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT
+    ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT,ai_sentiment:FLOAT,ai_summary:STRING
 
 echo "Created BigQuery Dataset and Table."
 ```
@@ -136,8 +153,8 @@ echo "Created BigQuery Dataset and Table."
 
 ```bash
 export TRIGGER_TOPIC="stock-ingestion-trigger"
-export DATA_TOPIC="stock-data-for-analysis"
-export DATA_SUB="stock-data-for-analysis-sub"
+export DATA_TOPIC="stock-data-enriched"
+export DATA_SUB="stock-data-enriched-sub"
 
 gcloud pubsub topics create $TRIGGER_TOPIC
 gcloud pubsub topics create $DATA_TOPIC
@@ -158,139 +175,176 @@ mkdir -p stock-ingestion-function
 # Create main.py
 cat > stock-ingestion-function/main.py << EOF
 import functions_framework
-from google.cloud import pubsub_v1
-import yfinance as yf
-import json
-import os
 import logging
-from datetime import datetime
-import pandas as pd
-import time
+import os
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO)
-
-# Tickers for major tech companies
-TICKERS = ["GOOGL", "AAPL", "MSFT", "AMZN", "NVDA", "META"]
+# NOTE: Do not add any top-level logic or heavy imports here.
+# The container must start and listen on port 8080 immediately.
+# All initialization must happen inside the function handler.
 
 @functions_framework.cloud_event
 def fetch_and_publish_stock_data(cloud_event):
     """
-    Fetches historical stock data from Yahoo Finance and replays it as if it were live.
-    It selects the most recent full trading day and loops through it minute-by-minute
-    based on the current time.
+    Cloud Function entry point.
+    Fetches stock data and publishes it to Pub/Sub with AI insights.
     """
-    logging.info("Function 'fetch_and_publish_stock_data' invoked.")
-
-    gcp_project_id = os.environ.get("GCP_PROJECT_ID")
-    data_topic = os.environ.get("DATA_TOPIC")
-
-    if not gcp_project_id or not data_topic:
-        logging.error("FATAL: Missing GCP_PROJECT_ID or DATA_TOPIC env variables.")
-        return "Configuration Error", 500
-
-    logging.info(f"Project ID: {gcp_project_id}, Target Topic: {data_topic}")
+    # 1. Setup Logging (safe to do here)
+    logging.basicConfig(level=logging.INFO)
+    logging.info("Function 'fetch_and_publish_stock_data' started.")
 
     try:
-        logging.info(f"Fetching historical market data for: {', '.join(TICKERS)}")
-        # Fetch 5 days of data to ensure we capture at least one full trading day
-        data = yf.download(tickers=TICKERS, period="5d", interval="1m")
+        # 2. Lazy Import Heavy Dependencies
+        # This prevents cold-start crashes if imports fail or take too long.
+        import json
+        import time
+        from datetime import datetime
+        import yfinance as yf
+        import pandas as pd
+        from google.cloud import pubsub_v1
+        import google.generativeai as genai
 
-        if data.empty:
-            logging.warning("No data returned from yfinance for any tickers.")
-            return "OK - No data", 200
+        # 3. Configuration
+        PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
+        TOPIC_ID = os.environ.get("DATA_TOPIC")
+        API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(gcp_project_id, data_topic)
+        if not PROJECT_ID or not TOPIC_ID:
+            logging.error("Missing required environment variables: GCP_PROJECT_ID or DATA_TOPIC")
+            return
 
-        published_count = 0
+        # 4. Configure yfinance cache
+        try:
+            yf.set_tz_cache_location("/tmp/yf_cache")
+        except Exception as e:
+            logging.warning(f"Could not set yfinance cache: {e}")
 
-        # Determine the most recent full trading day
-        # We look at the index (DatetimeIndex) to find unique dates
-        unique_dates = sorted(list(set(data.index.date)))
+        # 5. Fetch Data
+        TICKERS = ["GOOGL", "AAPL", "MSFT", "AMZN", "NVDA", "META"]
+        logging.info(f"Fetching data for: {TICKERS}")
+
+        # Fetch 5 days to ensure we get the last trading day
+        df = yf.download(TICKERS, period="5d", interval="1m", progress=False)
         
+        if df.empty:
+            logging.warning("No data received from yfinance.")
+            return
+
+        # Get the last available date
+        unique_dates = sorted(list(set(df.index.date)))
         if not unique_dates:
-             logging.warning("No dates found in data.")
-             return "OK - No data", 200
-             
-        # Pick the last available date (likely the most recent full trading day)
+            logging.warning("No dates found in data.")
+            return
+            
         target_date = unique_dates[-1]
-        logging.info(f"Replaying data from: {target_date}")
-
-        # Filter data for that specific date
-        # Note: yfinance returns a DatetimeIndex which is timezone-aware.
-        # We need to handle the slicing carefully.
-        # Converting to string for robust slicing usually works well with pandas.
         target_date_str = str(target_date)
-        day_data = data.loc[target_date_str]
-
-        if day_data.empty:
-             logging.warning(f"No data found for target date {target_date_str}")
-             return "OK - No data", 200
-
-        # Calculate the replay index based on the current time
-        # We want to loop through the day's minutes.
-        # Total minutes in a trading day (9:30 - 16:00) is 390.
-        # But yfinance might return pre/post market data too, or fewer rows.
-        # We'll just take the total number of rows available for that day and modulo.
-        total_rows = len(day_data)
-        current_timestamp = int(time.time())
-        # Change the index every minute (60 seconds)
-        replay_index = (current_timestamp // 60) % total_rows
+        day_data = df.loc[target_date_str]
         
-        logging.info(f"Replay Index: {replay_index} / {total_rows}")
+        if day_data.empty:
+            logging.warning(f"No data for date {target_date_str}")
+            return
 
-        # Extract the specific row for this minute
-        current_row = day_data.iloc[replay_index]
+        # Replay logic: pick a minute based on current time
+        total_minutes = len(day_data)
+        current_minute_index = (int(time.time()) // 60) % total_minutes
+        
+        current_row = day_data.iloc[current_minute_index]
+        logging.info(f"Replaying minute {current_minute_index}/{total_minutes} from {target_date_str}")
 
-        # Handle MultiIndex vs Single Index
-        if isinstance(data.columns, pd.MultiIndex):
-            for ticker in TICKERS:
-                try:
-                    # Access the data for this ticker from the current row
-                    # The row is a Series with a MultiIndex if we selected a single row from a MultiIndex DataFrame
-                    # Structure: (Price, Ticker)
-                    
-                    # We need to extract Close and Volume for this specific ticker
-                    # current_row is a Series. Index is MultiIndex (Price, Ticker) or (Ticker, Price) depending on yfinance version?
-                    # Actually, day_data is a DataFrame. current_row is a Series corresponding to one timestamp.
-                    # The index of current_row is the columns of the DataFrame.
-                    
+        # 6. Prepare Data for Batch Processing
+        batch_data = {}
+        is_multi_index = isinstance(df.columns, pd.MultiIndex)
+
+        for ticker in TICKERS:
+            try:
+                if is_multi_index:
                     price = current_row.get(('Close', ticker))
                     volume = current_row.get(('Volume', ticker))
+                else:
+                    price = current_row['Close']
+                    volume = current_row['Volume']
 
-                    if pd.isna(price) or pd.isna(volume):
-                        logging.debug(f"NaN data for {ticker} at index {replay_index}")
-                        continue
-
-                    message_data = { "ticker": ticker, "price": float(price), "volume": int(volume), "timestamp": datetime.now().isoformat() }
-                    message_bytes = json.dumps(message_data).encode("utf-8")
-                    future = publisher.publish(topic_path, message_bytes)
-                    future.result()
-                    published_count += 1
-                except Exception as e:
-                    logging.warning(f"Could not process data for ticker '{ticker}'. Error: {e}")
+                if pd.isna(price) or pd.isna(volume):
                     continue
-        else: # Handle the single-ticker case
-            if not day_data.empty:
-                # For single ticker, columns are just ['Open', 'High', 'Low', 'Close', 'Volume', ...]
-                price = current_row['Close']
-                volume = current_row['Volume']
-                ticker = TICKERS[0]
                 
-                if not pd.isna(price) and not pd.isna(volume):
-                    message_data = { "ticker": ticker, "price": float(price), "volume": int(volume), "timestamp": datetime.now().isoformat() }
-                    message_bytes = json.dumps(message_data).encode("utf-8")
-                    future = publisher.publish(topic_path, message_bytes)
-                    future.result()
-                    published_count += 1
+                batch_data[ticker] = {
+                    "price": float(price),
+                    "volume": int(volume)
+                }
+            except Exception as e:
+                logging.warning(f"Error extracting data for {ticker}: {e}")
 
-        logging.info(f"Successfully published {published_count} stock data messages (Replay Mode).")
-        return "OK", 200
+        if not batch_data:
+            logging.warning("No valid data found for any ticker.")
+            return
+
+        # 7. Generate Batch AI Insights
+        ai_results = {}
+        if API_KEY:
+            try:
+                genai.configure(api_key=API_KEY)
+                model = genai.GenerativeModel("models/gemini-3-pro-preview")
+                
+                # Construct a single prompt for all tickers
+                prompt_lines = ["Analyze the following stock data and provide a 1-sentence summary and sentiment score (-1 to 1) for EACH ticker."]
+                prompt_lines.append("Return a JSON object where keys are tickers and values have 'summary' and 'sentiment'.")
+                prompt_lines.append("Data:")
+                for t, d in batch_data.items():
+                    prompt_lines.append(f"- {t}: Price ${d['price']:.2f}, Volume {d['volume']}")
+                
+                full_prompt = "\n".join(prompt_lines)
+                
+                response = model.generate_content(
+                    full_prompt,
+                    generation_config=genai.GenerationConfig(
+                        temperature=0.2,
+                        response_mime_type="application/json",
+                        max_output_tokens=8192
+                    ),
+                    safety_settings=[
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                    ]
+                )
+                ai_results = json.loads(response.text)
+                logging.info("Batch AI insights generated successfully.")
+            except Exception as ai_err:
+                logging.error(f"Batch AI generation failed: {ai_err}")
+        else:
+            logging.warning("GOOGLE_API_KEY not set. Skipping AI generation.")
+
+        # 8. Publish to Pub/Sub
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
+
+        for ticker, data in batch_data.items():
+            try:
+                # Get AI result for this ticker, or default
+                ticker_ai = ai_results.get(ticker, {})
+                sentiment = ticker_ai.get("sentiment", 0.0)
+                summary = ticker_ai.get("summary", "No AI insight.")
+
+                message_json = {
+                    "ticker": ticker,
+                    "price": data['price'],
+                    "volume": data['volume'],
+                    "timestamp": datetime.now().isoformat(),
+                    "ai_sentiment": sentiment,
+                    "ai_summary": summary
+                }
+                
+                data_str = json.dumps(message_json)
+                future = publisher.publish(topic_path, data_str.encode("utf-8"))
+                future.result()
+                
+            except Exception as pub_err:
+                logging.error(f"Error publishing {ticker}: {pub_err}")
+
+        logging.info(f"Published {len(batch_data)} messages.")
 
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
-        return "Internal Server Error", 500
+        logging.error(f"Fatal error in execution: {e}")
 EOF
 
 # Create requirements.txt
@@ -299,6 +353,7 @@ functions-framework>=3.0.0
 google-cloud-pubsub>=2.13.0
 yfinance>=0.2.37
 pandas>=2.2.0
+google-generativeai>=0.3.0
 EOF
 ```
 
@@ -314,9 +369,9 @@ gcloud functions deploy fetch-and-publish-stock-data \
   --source=. \
   --entry-point=fetch_and_publish_stock_data \
   --trigger-topic=$TRIGGER_TOPIC \
-  --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,DATA_TOPIC=$DATA_TOPIC \
-  --memory=512Mi \
-  --timeout=120s
+  --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,DATA_TOPIC=$DATA_TOPIC,GOOGLE_API_KEY=$GOOGLE_API_KEY \
+  --memory=2Gi \
+  --timeout=300s
 
 cd ..
 echo "Cloud Function deployment initiated."
@@ -395,7 +450,9 @@ class FormatOutput(beam.DoFn):
             'total_value_1m': data['total_value_1m'], # New Metric
             'sma_5m': data['sma_5m'],
             'is_volume_spike': data.get('is_volume_spike', False),
-            'system_latency': system_latency # New Metric
+            'system_latency': system_latency, # New Metric
+            'ai_sentiment': data.get('ai_sentiment', 0.0), # New AI Metric
+            'ai_summary': data.get('ai_summary', 'No summary') # New AI Metric
         }
         yield output_row
 
@@ -423,7 +480,10 @@ def run():
                       'latest_price': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp())['price'],
                       'high_price_1m': max(item['price'] for item in kv[1]),
                       'total_volume_1m': sum(item['volume'] for item in kv[1]),
-                      'total_value_1m': sum(item['price'] * item['volume'] for item in kv[1]) # New Metric
+                      'total_value_1m': sum(item['price'] * item['volume'] for item in kv[1]), # New Metric
+                      # Pass through the AI fields from the latest event in the window
+                      'ai_sentiment': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp()).get('ai_sentiment', 0.0),
+                      'ai_summary': max(kv[1], key=lambda x: datetime.fromisoformat(x['timestamp']).timestamp()).get('ai_summary', 'No summary')
                   })))
 
         # 5-minute SMA
@@ -456,7 +516,7 @@ def run():
          | 'Format for BigQuery' >> beam.ParDo(FormatOutput())
          | 'Write to BigQuery' >> beam.io.WriteToBigQuery(
              custom_options.output_table,
-             schema='ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT',
+             schema='ticker:STRING,window_timestamp:TIMESTAMP,latest_price:FLOAT,high_price_1m:FLOAT,total_volume_1m:INTEGER,total_value_1m:FLOAT,sma_5m:FLOAT,is_volume_spike:BOOLEAN,system_latency:FLOAT,ai_sentiment:FLOAT,ai_summary:STRING',
              write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
              create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
            )
@@ -672,6 +732,23 @@ SELECT
 FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
 WHERE system_latency > 30
 ORDER BY system_latency DESC;
+```
+
+### 6.8. AI Sentiment Analysis 🤖
+Analyze the correlation between the AI-generated sentiment score and the actual price movement.
+
+```sql
+SELECT
+    ticker,
+    AVG(ai_sentiment) as avg_sentiment,
+    AVG(latest_price) as avg_price,
+    COUNT(*) as data_points,
+    -- Check if positive sentiment correlates with higher prices (simplified)
+    CORR(ai_sentiment, latest_price) as sentiment_price_correlation
+FROM `YOUR_PROJECT_ID.stock_market_dataset.realtime_analysis`
+WHERE window_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+GROUP BY ticker
+ORDER BY avg_sentiment DESC;
 ```
 
 ---
