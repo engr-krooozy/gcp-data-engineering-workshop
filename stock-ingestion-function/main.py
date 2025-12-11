@@ -43,7 +43,7 @@ def fetch_and_publish_stock_data(cloud_event):
             logging.warning(f"Could not set yfinance cache: {e}")
 
         # 5. Fetch Data
-        TICKERS = ["GOOGL", "AAPL", "MSFT", "AMZN", "NVDA", "META"]
+        TICKERS = ["GOOGL", "AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA"]
         logging.info(f"Fetching data for: {TICKERS}")
 
         # Fetch 5 days to ensure we get the last trading day
@@ -108,12 +108,22 @@ def fetch_and_publish_stock_data(cloud_event):
                 genai.configure(api_key=API_KEY)
                 model = genai.GenerativeModel("models/gemini-3-pro-preview")
                 
-                # Construct a single prompt for all tickers
-                prompt_lines = ["Analyze the following stock data and provide a 1-sentence summary and sentiment score (-1 to 1) for EACH ticker."]
-                prompt_lines.append("Return a JSON object where keys are tickers and values have 'summary' and 'sentiment'.")
-                prompt_lines.append("Data:")
+                # Construct a single prompt for all tickers with technical analysis focus
+                prompt_lines = [
+                    "Role: Act as a Senior Technical Analyst for the technology sector.",
+                    "Input: I will provide the current price and volume data for the magnificent 7 tech companies (Tech Giants).",
+                    "Task: Analyze the price action, volatility, and recent momentum for each ticker.",
+                    "",
+                    "Output Requirements:",
+                    "1. Technical Insight: Identify the current chart pattern or trend (e.g., 'breaking out,' 'consolidating,' or 'hitting resistance'). Do not simply state the price change. Mention key support/resistance levels if visible.",
+                    "2. Trend Score: Assign a 'Technical Strength Score' from -1 (Strong Bearish Trend) to 1 (Strong Bullish Trend).",
+                    "",
+                    "Return a JSON object where keys are tickers and values have 'summary' (technical insight) and 'sentiment' (trend score).",
+                    "",
+                    "Data:"
+                ]
                 for t, d in batch_data.items():
-                    prompt_lines.append(f"- {t}: Price ${d['price']:.2f}, Volume {d['volume']}")
+                    prompt_lines.append(f"- {t}: Price ${d['price']:.2f}, Volume {d['volume']:,}")
                 
                 full_prompt = "\n".join(prompt_lines)
                 
