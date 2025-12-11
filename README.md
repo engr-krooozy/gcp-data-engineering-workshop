@@ -173,7 +173,7 @@ echo "Created 2 Pub/Sub Topics and 1 Subscription."
 mkdir -p stock-ingestion-function
 
 # Create main.py
-cat > stock-ingestion-function/main.py << EOF
+cat > stock-ingestion-function/main.py << 'EOF'
 import functions_framework
 import logging
 import os
@@ -287,12 +287,11 @@ def fetch_and_publish_stock_data(cloud_event):
                 # Construct a single prompt for all tickers with technical analysis focus
                 prompt_lines = [
                     "Role: Act as a Senior Technical Analyst for the technology sector.",
-                    "Input: I will provide the current price and volume data for the magnificent 7 tech companies(Tech Giants).",
+                    "Input: I will provide the current price and volume data for the magnificent 7 tech companies (Tech Giants).",
                     "Task: Analyze the price action, volatility, and recent momentum for each ticker.",
                     "",
                     "Output Requirements:",
-                    "1. Technical Insight: Identify the current chart pattern or trend (e.g., 'breaking out,' 'consolidating,' or 'hitting resistance').
-                    Do not simply state the price change. Mention key support/resistance levels if visible.",
+                    "1. Technical Insight: Identify the current chart pattern or trend (e.g., 'breaking out,' 'consolidating,' or 'hitting resistance'). Do not simply state the price change. Mention key support/resistance levels if visible.",
                     "2. Trend Score: Assign a 'Technical Strength Score' from -1 (Strong Bearish Trend) to 1 (Strong Bullish Trend).",
                     "",
                     "Return a JSON object where keys are tickers and values have 'summary' (technical insight) and 'sentiment' (trend score).",
@@ -300,7 +299,7 @@ def fetch_and_publish_stock_data(cloud_event):
                     "Data:"
                 ]
                 for t, d in batch_data.items():
-                    prompt_lines.append(f"- {t}: Price ${d['price']:.2f}, Volume {d['volume']}")
+                    prompt_lines.append(f"- {t}: Price ${d['price']:.2f}, Volume {d['volume']:,}")
                 
                 full_prompt = "\n".join(prompt_lines)
                 
@@ -359,14 +358,13 @@ def fetch_and_publish_stock_data(cloud_event):
 EOF
 
 # Create requirements.txt
-cat > stock-ingestion-function/requirements.txt << EOF
+cat > stock-ingestion-function/requirements.txt << 'EOF'
 functions-framework>=3.0.0
 google-cloud-pubsub>=2.13.0
 yfinance>=0.2.37
 pandas>=2.2.0
 google-generativeai>=0.3.0
-EOF
-```
+EOF```
 
 ### 3.2. Deploy the Cloud Function
 
