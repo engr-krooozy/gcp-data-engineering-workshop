@@ -14,10 +14,12 @@ This workshop is designed to be completed in approximately **1 hour**.
 *   How to build a modern, event-driven data pipeline from scratch.
 *   How to use **Cloud Scheduler** to trigger a pipeline on a recurring schedule.
 *   How to write a Python **Cloud Function** to ingest live financial data using an external API.
+*   How to integrate **Gemini 3.0 Pro** AI model for real-time technical analysis and trend scoring.
 *   How to use **Pub/Sub** as a scalable, durable message bus.
 *   How to build and deploy a streaming **Dataflow** pipeline that uses advanced features like **windowing** and **stateful processing**.
 *   How to calculate real-time **technical indicators** (e.g., Simple Moving Average).
 *   How to perform **anomaly detection** on a live data stream.
+*   How to enrich stock data with **AI-powered insights** including chart patterns and support/resistance levels.
 *   How to store and query the final structured results in **BigQuery**.
 
 ### Our Fintech Architecture
@@ -28,14 +30,15 @@ We will build a real-time stock analysis pipeline using a scheduled, event-drive
 
 The workflow is:
 1.  **Schedule:** A **Cloud Scheduler** job runs every minute, sending a trigger message to a Pub/Sub topic.
-2.  **Ingest:** A **Cloud Function**, subscribed to the trigger topic, activates. It fetches the latest stock prices for major tech companies from the Yahoo Finance API.
-3.  **Publish:** The function publishes the data for each stock as a distinct message to a second Pub/Sub topic.
-4.  **Process & Analyze:** A streaming **Dataflow** pipeline, subscribed to the data topic, performs a series of real-time analyses:
+2.  **Ingest:** A **Cloud Function**, subscribed to the trigger topic, activates. It fetches the latest stock prices for the Magnificent 7 tech companies from the Yahoo Finance API.
+3.  **AI Enrichment:** The function sends the stock data to **Gemini 3.0 Pro** for technical analysis, receiving trend scores (-1 to 1) and insights about chart patterns, support/resistance levels, and momentum.
+4.  **Publish:** The function publishes the AI-enriched data for each stock as a distinct message to a second Pub/Sub topic.
+5.  **Process & Analyze:** A streaming **Dataflow** pipeline, subscribed to the data topic, performs a series of real-time analyses:
     *   **1-Minute Aggregations:** It calculates the highest price, **total traded value**, and total trading volume within 1-minute fixed windows.
     *   **5-Minute Moving Average:** It calculates the 5-minute Simple Moving Average (SMA) of the price using a 5-minute sliding window.
     *   **Volume Spike Detection:** It uses stateful processing to detect anomalous spikes in trading volume by comparing the current minute's volume to the 10-minute historical average.
     *   **System Latency:** It tracks the end-to-end latency of the pipeline to measure performance.
-5.  **Store:** The final, enriched data—including the latest price, technical indicators, and anomaly flags—is streamed into a **BigQuery** table for analysis.
+6.  **Store:** The final, enriched data—including the latest price, technical indicators, AI trend scores, AI insights, and anomaly flags—is streamed into a **BigQuery** table for analysis.
 
 ---
 
@@ -57,7 +60,8 @@ First, let's get your Google Cloud project and Cloud Shell ready.
 #Replace `your-project-id` with your actual project ID on Google Cloud
 gcloud config set project your-project-id
 echo "Project configured."
-
+```
+```bash
 # 2. Store variables for easy use
 export PROJECT_ID=$(gcloud config get-value project)
 export REGION="us-central1"
@@ -66,23 +70,21 @@ export REGION="us-central1"
 echo "Using Project ID: $PROJECT_ID in Region: $REGION"
 ```
 
+### 1.3. Configure Your Google AI Studio API Key
+
+To access the Gemini 3.0 model, you need an API key from Google AI Studio.
+
+1.  Go to [Google AI Studio](https://aistudio.google.com/).
+2.  Click on **Get API key**.
+3.  Click **Create API key**.
+4.  Copy the key and run the following command in Cloud Shell:
+
+```bash
+export GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+echo "Google API Key configured."
 ```
- 
- ### 1.3. Configure Your Google AI Studio API Key
- 
- To access the Gemini 3.0 model, you need an API key from Google AI Studio.
- 
- 1.  Go to [Google AI Studio](https://aistudio.google.com/).
- 2.  Click on **Get API key**.
- 3.  Click **Create API key**.
- 4.  Copy the key and run the following command in Cloud Shell:
- 
- ```bash
- export GOOGLE_API_KEY="YOUR_API_KEY_HERE"
- echo "Google API Key configured."
- ```
- 
- ### 1.4. Enable Required Google Cloud APIs
+
+### 1.4. Enable Required Google Cloud APIs
 
 ```bash
 gcloud services enable \
@@ -364,7 +366,8 @@ google-cloud-pubsub>=2.13.0
 yfinance>=0.2.37
 pandas>=2.2.0
 google-generativeai>=0.3.0
-EOF```
+EOF
+```
 
 ### 3.2. Deploy the Cloud Function
 
@@ -791,6 +794,3 @@ gcloud pubsub topics delete $DATA_TOPIC --project=$PROJECT_ID
 
 echo "Cleanup complete."
 ```
----
-
-Google Cloud credits are provided for this project. #AISprint #AISprintH2
