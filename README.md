@@ -794,3 +794,6 @@ gcloud pubsub topics delete $DATA_TOPIC --project=$PROJECT_ID
 
 echo "Cleanup complete."
 ```
+---
+
+Google Cloud credits are provided for this project. #AISprint #AISprintH2 #AISprint2025
