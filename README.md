@@ -39,6 +39,37 @@ The workflow is:
     *   **Volume Spike Detection:** It uses stateful processing to detect anomalous spikes in trading volume by comparing the current minute's volume to the 10-minute historical average.
     *   **System Latency:** It tracks the end-to-end latency of the pipeline to measure performance.
 6.  **Store:** The final, enriched data—including the latest price, technical indicators, AI trend scores, AI insights, and anomaly flags—is streamed into a **BigQuery** table for analysis.
+		
+```mermaid
+graph TD
+		subgraph "Ingestion Layer"
+				Scheduler[Cloud Scheduler] -->|Triggers every 1 min| TriggerTopic[Pub/Sub Topic: stock-ingestion-trigger]
+				TriggerTopic -->|Triggers| CF[Cloud Function: fetch-and-publish-stock-data]
+				CF <-->|Fetches Prices| YF[Yahoo Finance API]
+				CF <-->|Generates Insights| Gemini[Gemini 3.0 Pro API]
+				CF -->|Publishes Enriched Data| DataTopic[Pub/Sub Topic: stock-data-enriched]
+		end
+
+		subgraph "Processing Layer"
+				DataTopic -->|Subscription| DataSub[Pub/Sub Sub: stock-data-enriched-sub]
+				DataSub -->|Reads Stream| Dataflow[Dataflow Pipeline]
+				
+				subgraph "Dataflow Logic"
+						Dataflow -->|Window 1m| Agg1[1-min Aggregation]
+						Dataflow -->|Sliding Window 5m| SMA[5-min SMA]
+						Agg1 --> Join[Join Metrics]
+						SMA --> Join
+						Join -->|Detects| Anomaly[Volume Spike Detection]
+				end
+				
+				Anomaly -->|Writes Rows| BQ[BigQuery: stock_market_dataset.realtime_analysis]
+		end
+
+		subgraph "Presentation Layer"
+				BQ -->|Queries Data| App[Streamlit App]
+				App -->|Displays| Dashboard[User Dashboard]
+		end
+```
 
 ---
 
